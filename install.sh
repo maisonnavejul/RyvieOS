@@ -10,7 +10,7 @@ echo "
          __/ |                             
         |___/                              
 "
-echo ""
+echo "By Jules Maisonnave"
 echo "Bienvenue sur Ryvie OS 🚀"
 echo "Ce script est un test : aucune installation n'est effectuée pour le moment."
 #!/usr/bin/bash
