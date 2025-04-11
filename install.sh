@@ -83,3 +83,5 @@ if command -v docker > /dev/null 2>&1; then
     else
         echo "Erreur: Docker a rencontré un problème lors de l'exécution du test."
     fi
+else
+    echo "Docker n'est pas installé. L'installation va débuter..."
