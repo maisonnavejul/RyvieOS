@@ -70,7 +70,7 @@ echo "Espace disque libre: ${FREE_DISK_GB} GB (OK)"
 
 # 5. Vérification des dépendances (place réservée)
 echo "Vérification des dépendances: (à implémenter...)"
-echo"----------------------------------------------------"
+echo "----------------------------------------------------"
 echo "Étape 6: Vérification de Docker"
 echo "----------------------------------------------------"
 
