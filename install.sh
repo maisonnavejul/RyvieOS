@@ -70,3 +70,16 @@ echo "Espace disque libre: ${FREE_DISK_GB} GB (OK)"
 
 # 5. Vérification des dépendances (place réservée)
 echo "Vérification des dépendances: (à implémenter...)"
+echo"----------------------------------------------------"
+echo "Étape 6: Vérification de Docker"
+echo "----------------------------------------------------"
+
+if command -v docker > /dev/null 2>&1; then
+    echo "Docker est déjà installé : $(docker --version)"
+    echo "Vérification de Docker en exécutant 'docker run hello-world'..."
+    sudo docker run hello-world
+    if [ $? -eq 0 ]; then
+        echo "Docker fonctionne correctement."
+    else
+        echo "Erreur: Docker a rencontré un problème lors de l'exécution du test."
+    fi
