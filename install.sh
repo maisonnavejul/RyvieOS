@@ -69,9 +69,9 @@ fi
 echo "Espace disque libre: ${FREE_DISK_GB} GB (OK)"
 
 echo ""
-echo "=========================================="
+echo "------------------------------------------"
 echo " Etape 5 Vérification et installation de Node.js "
-echo "=========================================="
+echo "------------------------------------------"
 echo ""
 
 # Vérifier si Node.js est installé
@@ -91,9 +91,9 @@ else
 fi
 
 echo ""
-echo "=========================================="
+echo "------------------------------------------"
 echo " Vérification et installation de npm "
-echo "=========================================="
+echo "------------------------------------------"
 echo ""
 
 # Vérifier si npm est installé
@@ -174,9 +174,9 @@ else
     fi
 fi
 echo ""
-echo "=================================================="
+echo "--------------------------------------------------"
 echo "Etape 8: Ajout de l'utilisateur ($USER) au groupe docker "
-echo "=================================================="
+echo "--------------------------------------------------"
 echo ""
 
 # Vérifier si l'utilisateur est déjà dans le groupe docker
