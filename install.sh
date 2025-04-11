@@ -170,6 +170,23 @@ else
     if [ $? -eq 0 ]; then
         echo "Docker a été installé et fonctionne correctement."
     else
+echo ""
+echo "=================================================="
+echo "Etape 8: Ajout de l'utilisateur ($USER) au groupe docker "
+echo "=================================================="
+echo ""
+
+# Vérifier si l'utilisateur est déjà dans le groupe docker
+if id -nG "$USER" | grep -qw "docker"; then
+    echo "L'utilisateur $USER est déjà membre du groupe docker."
+else
+    # Ajouter l'utilisateur actuel au groupe docker et appliquer la modification
+    sudo usermod -aG docker $USER
+    newgrp docker
+
+    echo "L'utilisateur $USER a été ajouté au groupe docker."
+    echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
+fi
         echo "Erreur lors de l'installation ou de la vérification de Docker."
     fi
 fi
