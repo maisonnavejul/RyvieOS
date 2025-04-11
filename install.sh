@@ -170,6 +170,9 @@ else
     if [ $? -eq 0 ]; then
         echo "Docker a été installé et fonctionne correctement."
     else
+        echo "Erreur lors de l'installation ou de la vérification de Docker."
+    fi
+fi
 echo ""
 echo "=================================================="
 echo "Etape 8: Ajout de l'utilisateur ($USER) au groupe docker "
