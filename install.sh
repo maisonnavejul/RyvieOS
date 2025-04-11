@@ -190,6 +190,3 @@ else
     echo "L'utilisateur $USER a été ajouté au groupe docker."
     echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
 fi
-        echo "Erreur lors de l'installation ou de la vérification de Docker."
-    fi
-fi
