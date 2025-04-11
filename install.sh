@@ -14,7 +14,7 @@ echo ""
 echo "Bienvenue sur Ryvie OS 🚀"
 echo "By Jules Maisonnave"
 echo "Ce script est un test : aucune installation n'est effectuée pour le moment."
-#!/usr/bin/bash
+
 # =====================================================
 # Étape 1: Vérification des prérequis système
 # =====================================================
@@ -68,13 +68,68 @@ if [ "$FREE_DISK_GB" -lt "$MIN_DISK_GB" ]; then
 fi
 echo "Espace disque libre: ${FREE_DISK_GB} GB (OK)"
 
-# 5. Vérification des dépendances (place réservée)
-echo "Vérification des dépendances: (à implémenter...)"
+echo ""
+echo "=========================================="
+echo " Etape 5 Vérification et installation de Node.js "
+echo "=========================================="
+echo ""
+
+# Vérifier si Node.js est installé
+if command -v node > /dev/null 2>&1; then
+    echo "Node.js est déjà installé : $(node --version)"
+else
+    echo "Node.js n'est pas installé. Installation en cours..."
+    sudo apt update
+    sudo apt install -y nodejs
+    # Vérification après installation
+    if command -v node > /dev/null 2>&1; then
+        echo "Node.js a été installé avec succès : $(node --version)"
+    else
+        echo "Erreur: L'installation de Node.js a échoué."
+        exit 1
+    fi
+fi
+
+echo ""
+echo "=========================================="
+echo " Vérification et installation de npm "
+echo "=========================================="
+echo ""
+
+# Vérifier si npm est installé
+if command -v npm > /dev/null 2>&1; then
+    echo "npm est déjà installé : $(npm --version)"
+else
+    echo "npm n'est pas installé. Installation en cours..."
+    sudo apt update
+    sudo apt install -y npm
+    # Vérification après installation
+    if command -v npm > /dev/null 2>&1; then
+        echo "npm a été installé avec succès : $(npm --version)"
+    else
+        echo "Erreur: L'installation de npm a échoué."
+        exit 1
+    fi
+fi
+
+# 6. Vérification des dépendances (place réservée)
+echo "Etape 6: Vérification des dépendances: (à implémenter...)"
+# Installer les dépendances Node.js
+#npm install express cors http socket.io os dockerode ldapjs
+
+# Vérifier le code de retour de npm install
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "Tous les modules ont été installés avec succès."
+else
+    echo ""
+    echo "Erreur lors de l'installation d'un ou plusieurs modules."
+fi
 # =====================================================
-# Étape 6: Vérification de Docker et installation si nécessaire
+# Étape 7: Vérification de Docker et installation si nécessaire
 # =====================================================
 echo "----------------------------------------------------"
-echo "Étape 6: Vérification de Docker"
+echo "Étape 7: Vérification de Docker"
 echo "----------------------------------------------------"
 
 if command -v docker > /dev/null 2>&1; then
