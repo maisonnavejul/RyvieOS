@@ -70,6 +70,9 @@ echo "Espace disque libre: ${FREE_DISK_GB} GB (OK)"
 
 # 5. Vérification des dépendances (place réservée)
 echo "Vérification des dépendances: (à implémenter...)"
+# =====================================================
+# Étape 6: Vérification de Docker et installation si nécessaire
+# =====================================================
 echo "----------------------------------------------------"
 echo "Étape 6: Vérification de Docker"
 echo "----------------------------------------------------"
@@ -85,3 +88,33 @@ if command -v docker > /dev/null 2>&1; then
     fi
 else
     echo "Docker n'est pas installé. L'installation va débuter..."
+
+    ### 🐳 1. Mettre à jour les paquets
+    sudo apt update
+    sudo apt upgrade -y
+
+    ### 🐳 2. Installer les dépendances nécessaires
+    sudo apt install -y ca-certificates curl gnupg lsb-release
+
+    ### 🐳 3. Ajouter la clé GPG officielle de Docker
+    sudo mkdir -p /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+        sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+    ### 🐳 4. Ajouter le dépôt Docker
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+        sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    ### 🐳 5. Installer Docker Engine + Docker Compose plugin
+    sudo apt update
+    sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+    ### ✅ 6. Vérifier que Docker fonctionne
+    echo "Vérification de Docker en exécutant 'docker run hello-world'..."
+    sudo docker run hello-world
+    if [ $? -eq 0 ]; then
+        echo "Docker a été installé et fonctionne correctement."
+    else
+        echo "Erreur lors de l'installation ou de la vérification de Docker."
+    fi
+fi
