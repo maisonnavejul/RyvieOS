@@ -190,3 +190,16 @@ else
     echo "L'utilisateur $USER a été ajouté au groupe docker."
     echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
 fi
+
+echo "-----------------------------------------------------"
+echo "Etape 9: Ip du cloud Ryvie ryvie.local"
+echo "-----------------------------------------------------"
+echo " ( à implementer )"
+echo ""
+
+echo "-----------------------------------------------------"
+echo "Etape 10: Configuration d'OpenLDAP avec Docker Compose"
+echo "-----------------------------------------------------"
+echo " ( à implémenter non mis car mdp dedans )
+
+
