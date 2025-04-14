@@ -200,6 +200,6 @@ echo ""
 echo "-----------------------------------------------------"
 echo "Etape 10: Configuration d'OpenLDAP avec Docker Compose"
 echo "-----------------------------------------------------"
-echo " ( à implémenter non mis car mdp dedans )
+echo " ( à implémenter non mis car mdp dedans )"
 
 
