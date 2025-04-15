@@ -173,58 +173,33 @@ else
         echo "Erreur lors de l'installation ou de la vérification de Docker."
     fi
 fi
-RESUME_FILE="$HOME/.ryvie_resume_step"
-
 echo ""
-echo "--------------------------------------------------"
-
-# ========== Etape 8 : Ajout au groupe Docker ==========
-if [[ ! -f "$RESUME_FILE" ]]; then
-    echo "Etape 8: Ajout de l'utilisateur ($USER) au groupe docker"
-    echo "--------------------------------------------------"
-    echo ""
-
-    if id -nG "$USER" | grep -qw "docker"; then
-        echo "✅ L'utilisateur $USER est déjà membre du groupe docker."
-    else
-        echo "➕ Ajout de $USER au groupe docker..."
-        sudo usermod -aG docker "$USER"
-
-        echo ""
-        echo "⚠️ Pour appliquer les changements, une relance de la session est nécessaire."
-        echo "   (Option : relancer automatiquement dans ce terminal maintenant)"
-        echo ""
-
-        # Écrit un fichier pour dire "reprendre à l'étape 9"
-        echo "resume_from_step_9" > "$RESUME_FILE"
-
-        read -p "Souhaitez-vous relancer votre session maintenant (via su - $USER) ? [O/n] " confirm
-        if [[ "$confirm" =~ ^[Oo]$ || "$confirm" == "" ]]; then
-            echo ""
-            echo "🕓 Relance de session... (vous devrez entrer votre mot de passe)"
-            exec su - "$USER" -c "bash $0"
-        else
-            echo "ℹ️ Vous pourrez relancer le script plus tard avec : bash $0"
-            exit 0
-        fi
-    fi
-fi
-
-# ========== Etape 9 ==========
-echo ""
-echo "-----------------------------------------------------"
-echo "Etape 9: IP du cloud Ryvie ryvie.local"
-echo "-----------------------------------------------------"
-echo " ( à implémenter )"
-echo ""
-
-# ========== Etape 10 ==========
-echo "-----------------------------------------------------"
-echo "Etape 10: Configuration d'OpenLDAP avec Docker Compose"
-echo "-----------------------------------------------------"
-echo " ( à implémenter, non inclus car mot de passe à gérer )"
-
-# Nettoyage du fichier de reprise
-[ -f "$RESUME_FILE" ] && rm "$RESUME_FILE"
-
+ echo "--------------------------------------------------"
+ echo "Etape 8: Ajout de l'utilisateur ($USER) au groupe docker "
+ echo "--------------------------------------------------"
+ echo ""
+ 
+ # Vérifier si l'utilisateur est déjà dans le groupe docker
+ if id -nG "$USER" | grep -qw "docker"; then
+     echo "L'utilisateur $USER est déjà membre du groupe docker."
+ else
+     # Ajouter l'utilisateur actuel au groupe docker et appliquer la modification
+     sudo usermod -aG docker $USER
+     newgrp docker
+ 
+     echo "L'utilisateur $USER a été ajouté au groupe docker."
+     echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
+ fi
+ 
+ echo "-----------------------------------------------------"
+ echo "Etape 9: Ip du cloud Ryvie ryvie.local"
+ echo "-----------------------------------------------------"
+ echo " ( à implementer )"
+ echo ""
+ 
+ echo "-----------------------------------------------------"
+ echo "Etape 10: Configuration d'OpenLDAP avec Docker Compose"
+ echo "-----------------------------------------------------"
+ echo " ( à implémenter non mis car mdp dedans )
+ 
 
