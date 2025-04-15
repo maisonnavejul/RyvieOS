@@ -433,7 +433,7 @@ echo "✅ Fichier .env créé."
 
 # 5. Lancer les services Immich en mode production
 echo "🚀 Lancement de Immich (rPictures) avec Docker Compose..."
-sudo docker compose -f docker-compose.prod.yml up -d
+sudo docker compose -f docker-compose.ryvie.yml up -d
 
 # 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
 echo "⏳ Attente du démarrage d'Immich (port 2283)..."
