@@ -400,7 +400,12 @@ if [ -d "Ryvie-rPictures" ]; then
 else
     echo "📥 Clonage du dépôt Ryvie-rPictures..."
     git clone https://github.com/maisonnavejul/Ryvie-rPictures.git
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt. Arrêt du script."
+        exit 1
+    fi
 fi
+
 
 # 3. Se placer dans le dossier docker
 cd Ryvie-rPictures/docker
