@@ -179,27 +179,37 @@ echo "Etape 8: Ajout de l'utilisateur ($USER) au groupe docker "
 echo "--------------------------------------------------"
 echo ""
 
-# Vérifier si l'utilisateur est déjà dans le groupe docker
-if id -nG "$USER" | grep -qw "docker"; then
-    echo "L'utilisateur $USER est déjà membre du groupe docker."
-else
-    # Ajouter l'utilisateur actuel au groupe docker et appliquer la modification
-    sudo usermod -aG docker $USER
-    newgrp docker
+MARKER_FILE="$HOME/.ryvie_docker_group_done"
 
-    echo "L'utilisateur $USER a été ajouté au groupe docker."
-    echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
+if id -nG "$USER" | grep -qw "docker"; then
+    echo "✅ L'utilisateur $USER est déjà membre du groupe docker."
+else
+    echo "➕ Ajout de $USER au groupe docker..."
+    sudo usermod -aG docker "$USER"
+
+    echo "♻️ Redémarrage du shell avec le groupe docker actif..."
+    echo "⚠️ Vous allez peut-être devoir entrer votre mot de passe à nouveau."
+
+    # Marque le script comme déjà passé par ici
+    touch "$MARKER_FILE"
+    exec newgrp docker
+fi
+
+# On vérifie si c'est bien la relance
+if [ -f "$MARKER_FILE" ]; then
+    echo "✅ Relance réussie avec le groupe docker actif."
+    rm "$MARKER_FILE"
 fi
 
 echo "-----------------------------------------------------"
 echo "Etape 9: Ip du cloud Ryvie ryvie.local"
 echo "-----------------------------------------------------"
-echo " ( à implementer )"
+echo " ( à implémenter )"
 echo ""
 
 echo "-----------------------------------------------------"
 echo "Etape 10: Configuration d'OpenLDAP avec Docker Compose"
 echo "-----------------------------------------------------"
-echo " ( à implémenter non mis car mdp dedans )"
+echo " ( à implémenter, non inclus car mot de passe à gérer )"
 
 
