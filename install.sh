@@ -185,7 +185,6 @@ echo ""
  else
      # Ajouter l'utilisateur actuel au groupe docker et appliquer la modification
      sudo usermod -aG docker $USER
-     newgrp docker
  
      echo "L'utilisateur $USER a été ajouté au groupe docker."
      echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
@@ -200,6 +199,8 @@ echo ""
  echo "-----------------------------------------------------"
  echo "Etape 10: Configuration d'OpenLDAP avec Docker Compose"
  echo "-----------------------------------------------------"
- echo " ( à implémenter non mis car mdp dedans )
- 
+ echo " ( à implémenter non mis car mdp dedans )"
+
+ echo "Redemarrage de la session..."
+ newgrp docker
 
