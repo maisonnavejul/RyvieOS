@@ -447,7 +447,7 @@ until curl -s http://localhost:2283 > /dev/null; do
     echo -n "."
 done
 echo ""
-echo "✅ Immich est lancé."
+echo "✅ rPictures est lancé."
 
 # 7. Synchroniser les utilisateurs LDAP
 echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
