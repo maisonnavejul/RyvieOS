@@ -460,5 +460,55 @@ if [ "$RESPONSE" -eq 200 ]; then
 else
     echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
 fi
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 12: Installation de Ryvie rTransfer et synchronisation LDAP"
+echo "-----------------------------------------------------"
+
+# 1. Cloner le dépôt si pas déjà présent
+cd "$WORKDIR"
+if [ -d "Ryvie-rTransfer" ]; then
+    echo "✅ Le dépôt Ryvie-rTransfer existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie-rTransfer..."
+    git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt. Arrêt du script."
+        exit 1
+    fi
+fi
+
+# 2. Se placer dans le dossier
+cd Ryvie-rTransfer
+
+# 3. Mise à jour de la section LDAP dans le fichier config.yaml
+echo "🛠️ Mise à jour de la configuration LDAP dans config.yaml..."
+sed -i '/^ldap:/,/^[^ ]/c\
+ldap:\n\
+  enabled: "true"\n\
+  url: ldap://172.20.0.1:389\n\
+  bindDn: cn=admin,dc=example,dc=org\n\
+  bindPassword: adminpassword\n\
+  searchBase: ou=users,dc=example,dc=org\n\
+  searchQuery: (uid=%username%)\n\
+  adminGroups: admins\n\
+  fieldNameMemberOf: userRole\n\
+  fieldNameEmail: mail' config.yaml
+
+echo "✅ Bloc LDAP modifié avec succès."
+
+# 4. Lancer rTransfer avec le fichier docker-compose.local.yml
+echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.local.yml..."
+sudo docker compose -f docker-compose.local.yml up -d
+
+# 5. Vérification du démarrage sur le port 3000
+echo "⏳ Attente du démarrage de rTransfer (port 3000)..."
+until curl -s http://localhost:3000 > /dev/null; do
+    sleep 2
+    echo -n "."
+done
+echo ""
+echo "✅ rTransfer est lancé et prêt avec l’authentification LDAP."
+
 
 newgrp docker
