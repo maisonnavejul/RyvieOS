@@ -277,6 +277,7 @@ gidNumber: 1003
 homeDirectory: /home/jules
 mail: maisonnavejul@gmail.com
 userPassword: julespassword
+userRole: admins
 
 dn: cn=Test,ou=users,dc=example,dc=org
 objectClass: inetOrgPerson
@@ -290,6 +291,7 @@ gidNumber: 1004
 homeDirectory: /home/test
 mail: test@gmail.com
 userPassword: testpassword
+userRole: users
 EOF
 
 ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f add-users.ldif
