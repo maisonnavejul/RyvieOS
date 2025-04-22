@@ -277,7 +277,7 @@ gidNumber: 1003
 homeDirectory: /home/jules
 mail: maisonnavejul@gmail.com
 userPassword: julespassword
-description: admins
+employeeType: admins
 
 dn: cn=Test,ou=users,dc=example,dc=org
 objectClass: inetOrgPerson
@@ -291,7 +291,7 @@ gidNumber: 1004
 homeDirectory: /home/test
 mail: test@gmail.com
 userPassword: testpassword
-description: users
+employeeType: users
 EOF
 
 ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f add-users.ldif
@@ -492,7 +492,7 @@ ldap:\n\
   searchBase: ou=users,dc=example,dc=org\n\
   searchQuery: (uid=%username%)\n\
   adminGroups: admins\n\
-  fieldNameMemberOf: description\n\
+  fieldNameMemberOf: employeeType\n\
   fieldNameEmail: mail' config.yaml
 
 echo "✅ Bloc LDAP modifié avec succès."
