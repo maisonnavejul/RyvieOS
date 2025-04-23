@@ -510,5 +510,21 @@ done
 echo ""
 echo "✅ rTransfer est lancé et prêt avec l’authentification LDAP."
 
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 13: Installation de Ryvie rDrop"
+echo "-----------------------------------------------------"
+echo "Clonage du dépôt Ryvie-rdrop..."
+git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
+cd Ryvie-rdrop/snapdrop-master/snapdrop-master
+
+echo "Rend le script openssl exécutable..."
+chmod +x docker/openssl/create.sh
+
+echo "Lancement des conteneurs avec Docker Compose..."
+docker compose up -d
+
+echo "Tout est prêt 🎉"
+
 
 newgrp docker
