@@ -524,6 +524,20 @@ chmod +x docker/openssl/create.sh
 echo "Lancement des conteneurs avec Docker Compose..."
 docker compose up -d
 
+echo "Pour vous permettre d'accéder à votre serveur Ryvie depuis l'extérieur en toute sécurité,"
+echo "nous proposons d'installer et de configurer automatiquement un VPN sécurisé."
+echo "Cela permettra l'accès distant depuis votre PC et votre téléphone sans configuration complexe."
+echo ""
+read -p "Souhaitez-vous continuer ? (O/N) : " choix
+
+if [[ "$choix" == "O" || "$choix" == "o" ]]; then
+    curl -fsSL https://pkgs.netbird.io/install.sh | sh
+    netbird up --management-url https://jules.test.ryvie.fr --admin-url https://jules.test.ryvie.fr --setup-key DB1A3E54-0FC1-4A9E-BBCD-31C75A25866E
+    echo "VPN installé et configuré avec succès."
+else
+    echo "Installation du VPN annulée. Vous pourrez l'installer manuellement plus tard."
+fi
+
 echo "Tout est prêt 🎉"
 
 
