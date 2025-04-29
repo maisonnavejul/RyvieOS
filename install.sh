@@ -67,6 +67,27 @@ if [ "$FREE_DISK_GB" -lt "$MIN_DISK_GB" ]; then
     exit 1
 fi
 echo "Espace disque libre: ${FREE_DISK_GB} GB (OK)"
+echo ""
+echo "------------------------------------------"
+echo " Vérification et installation de npm "
+echo "------------------------------------------"
+echo ""
+
+# Vérifier si npm est installé
+if command -v npm > /dev/null 2>&1; then
+    echo "npm est déjà installé : $(npm --version)"
+else
+    echo "npm n'est pas installé. Installation en cours..."
+    sudo apt update
+    sudo apt install -y npm
+    # Vérification après installation
+    if command -v npm > /dev/null 2>&1; then
+        echo "npm a été installé avec succès : $(npm --version)"
+    else
+        echo "Erreur: L'installation de npm a échoué."
+        exit 1
+    fi
+fi
 
 echo ""
 echo "------------------------------------------"
@@ -98,28 +119,6 @@ else
         echo "Node.js a été installé avec succès : $(node --version)"
     else
         echo "Erreur : l'installation de Node.js a échoué."
-        exit 1
-    fi
-fi
-
-echo ""
-echo "------------------------------------------"
-echo " Vérification et installation de npm "
-echo "------------------------------------------"
-echo ""
-
-# Vérifier si npm est installé
-if command -v npm > /dev/null 2>&1; then
-    echo "npm est déjà installé : $(npm --version)"
-else
-    echo "npm n'est pas installé. Installation en cours..."
-    sudo apt update
-    sudo apt install -y npm
-    # Vérification après installation
-    if command -v npm > /dev/null 2>&1; then
-        echo "npm a été installé avec succès : $(npm --version)"
-    else
-        echo "Erreur: L'installation de npm a échoué."
         exit 1
     fi
 fi
