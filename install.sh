@@ -112,10 +112,14 @@ else
     fi
 fi
 
-# 6. Vérification des dépendances (place réservée)
-echo "Etape 6: Vérification des dépendances: (à implémenter...)"
+# 6. Vérification des dépendances 
+echo "----------------------------------------------------"
+echo "Etape 6: Vérification des dépendances"
+echo "----------------------------------------------------"
 # Installer les dépendances Node.js
 #npm install express cors http socket.io os dockerode ldapjs
+npm install express cors socket.io dockerode diskusage ldapjs os-utils --save
+
 sudo apt install -y ldap-utils
 # Vérifier le code de retour de npm install
 if [ $? -eq 0 ]; then
@@ -537,6 +541,41 @@ if [[ "$choix" == "O" || "$choix" == "o" ]]; then
 else
     echo "Installation du VPN annulée. Vous pourrez l'installer manuellement plus tard."
 fi
+echo "-----------------------------------------------------"
+echo "Étape 14: Installation et lancement du Back-End"
+echo "-----------------------------------------------------"
+
+WORKDIR="$HOME/Bureau"
+[ ! -d "$WORKDIR" ] && WORKDIR="$HOME/Desktop"
+[ ! -d "$WORKDIR" ] && WORKDIR="$HOME"
+
+echo "📁 Dossier sélectionné : $WORKDIR"
+cd "$WORKDIR"
+
+# 2. Cloner le dépôt si pas déjà présent
+if [ -d "Ryvie" ]; then
+    echo "✅ Le dépôt Ryvie-rPictures existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie Backend"
+    git clone https://github.com/maisonnavejul/Ryvie.git
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt. Arrêt du script."
+        exit 1
+    fi
+fi
+
+# Aller dans le dossier cloné
+cd Ryvie || { echo "Le dossier Ryvie est introuvable"; exit 1; }
+
+# Passer sur la branche Back-End
+git switch Back-End || { echo "Échec du passage à la branche Back-End"; exit 1; }
+
+# Aller dans le dossier du backend
+cd Ryvie-Back || { echo "Le dossier Ryvie-Back est introuvable"; exit 1; }
+
+# Lancer le serveur Node.js
+node index.js
+
 
 echo "Tout est prêt 🎉"
 
