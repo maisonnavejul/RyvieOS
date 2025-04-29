@@ -70,22 +70,34 @@ echo "Espace disque libre: ${FREE_DISK_GB} GB (OK)"
 
 echo ""
 echo "------------------------------------------"
-echo " Etape 5 Vérification et installation de Node.js "
+echo " Étape 5 : Vérification et installation de Node.js "
 echo "------------------------------------------"
 echo ""
 
-# Vérifier si Node.js est installé
-if command -v node > /dev/null 2>&1; then
+# Vérifie si Node.js est installé et s'il est à jour (v14 ou plus)
+if command -v node > /dev/null 2>&1 && [ "$(node -v | cut -d 'v' -f2 | cut -d '.' -f1)" -ge 14 ]; then
     echo "Node.js est déjà installé : $(node --version)"
 else
-    echo "Node.js n'est pas installé. Installation en cours..."
-    sudo apt update
-    sudo apt install -y nodejs
+    echo "Node.js est manquant ou trop ancien. Installation de la version stable avec 'n'..."
+
+    # Installer 'n' si absent
+    if ! command -v n > /dev/null 2>&1; then
+        echo "Installation de 'n' (Node version manager)..."
+        sudo npm install -g n
+    fi
+
+    # Installer Node.js stable (la plus récente)
+    sudo n stable
+
+    # Corriger la session shell
+    export PATH="/usr/local/bin:$PATH"
+    hash -r
+
     # Vérification après installation
     if command -v node > /dev/null 2>&1; then
         echo "Node.js a été installé avec succès : $(node --version)"
     else
-        echo "Erreur: L'installation de Node.js a échoué."
+        echo "Erreur : l'installation de Node.js a échoué."
         exit 1
     fi
 fi
