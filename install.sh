@@ -129,8 +129,7 @@ echo "Etape 6: Vérification des dépendances"
 echo "----------------------------------------------------"
 # Installer les dépendances Node.js
 #npm install express cors http socket.io os dockerode ldapjs
-npm install express cors socket.io dockerode diskusage systeminformation ldapjs os-utils --save
-
+npm install express cors socket.io dockerode diskusage systeminformation ldapjs dotenv jsonwebtoken os-utils --save
 sudo apt install -y ldap-utils
 # Vérifier le code de retour de npm install
 if [ $? -eq 0 ]; then
