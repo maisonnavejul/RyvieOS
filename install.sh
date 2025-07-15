@@ -67,29 +67,6 @@ if [ "$FREE_DISK_GB" -lt "$MIN_DISK_GB" ]; then
     exit 1
 fi
 echo "Espace disque libre: ${FREE_DISK_GB} GB (OK)"
-
-echo ""
-echo "------------------------------------------"
-echo " Etape 5 Vérification et installation de Node.js "
-echo "------------------------------------------"
-echo ""
-
-# Vérifier si Node.js est installé
-if command -v node > /dev/null 2>&1; then
-    echo "Node.js est déjà installé : $(node --version)"
-else
-    echo "Node.js n'est pas installé. Installation en cours..."
-    sudo apt update
-    sudo apt install -y nodejs
-    # Vérification après installation
-    if command -v node > /dev/null 2>&1; then
-        echo "Node.js a été installé avec succès : $(node --version)"
-    else
-        echo "Erreur: L'installation de Node.js a échoué."
-        exit 1
-    fi
-fi
-
 echo ""
 echo "------------------------------------------"
 echo " Vérification et installation de npm "
@@ -112,10 +89,47 @@ else
     fi
 fi
 
-# 6. Vérification des dépendances (place réservée)
-echo "Etape 6: Vérification des dépendances: (à implémenter...)"
+echo ""
+echo "------------------------------------------"
+echo " Étape 5 : Vérification et installation de Node.js "
+echo "------------------------------------------"
+echo ""
+
+# Vérifie si Node.js est installé et s'il est à jour (v14 ou plus)
+if command -v node > /dev/null 2>&1 && [ "$(node -v | cut -d 'v' -f2 | cut -d '.' -f1)" -ge 14 ]; then
+    echo "Node.js est déjà installé : $(node --version)"
+else
+    echo "Node.js est manquant ou trop ancien. Installation de la version stable avec 'n'..."
+
+    # Installer 'n' si absent
+    if ! command -v n > /dev/null 2>&1; then
+        echo "Installation de 'n' (Node version manager)..."
+        sudo npm install -g n
+    fi
+
+    # Installer Node.js stable (la plus récente)
+    sudo n stable
+
+    # Corriger la session shell
+    export PATH="/usr/local/bin:$PATH"
+    hash -r
+
+    # Vérification après installation
+    if command -v node > /dev/null 2>&1; then
+        echo "Node.js a été installé avec succès : $(node --version)"
+    else
+        echo "Erreur : l'installation de Node.js a échoué."
+        exit 1
+    fi
+fi
+
+# 6. Vérification des dépendances 
+echo "----------------------------------------------------"
+echo "Etape 6: Vérification des dépendances"
+echo "----------------------------------------------------"
 # Installer les dépendances Node.js
 #npm install express cors http socket.io os dockerode ldapjs
+npm install express cors socket.io dockerode diskusage systeminformation ldapjs dotenv jsonwebtoken os-utils --save
 sudo apt install -y ldap-utils
 # Vérifier le code de retour de npm install
 if [ $? -eq 0 ]; then
@@ -509,6 +523,71 @@ until curl -s http://localhost:3000 > /dev/null; do
 done
 echo ""
 echo "✅ rTransfer est lancé et prêt avec l’authentification LDAP."
+
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 13: Installation de Ryvie rDrop"
+echo "-----------------------------------------------------"
+echo "Clonage du dépôt Ryvie-rdrop..."
+git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
+cd Ryvie-rdrop/snapdrop-master/snapdrop-master
+
+echo "Rend le script openssl exécutable..."
+chmod +x docker/openssl/create.sh
+
+echo "Lancement des conteneurs avec Docker Compose..."
+docker compose up -d
+
+echo "Pour vous permettre d'accéder à votre serveur Ryvie depuis l'extérieur en toute sécurité,"
+echo "nous proposons d'installer et de configurer automatiquement un VPN sécurisé."
+echo "Cela permettra l'accès distant depuis votre PC et votre téléphone sans configuration complexe."
+echo ""
+read -p "Souhaitez-vous continuer ? (O/N) : " choix
+
+if [[ "$choix" == "O" || "$choix" == "o" ]]; then
+    curl -fsSL https://pkgs.netbird.io/install.sh | sh
+    netbird up --management-url https://jules.test.ryvie.fr --admin-url https://jules.test.ryvie.fr --setup-key DB1A3E54-0FC1-4A9E-BBCD-31C75A25866E
+    echo "VPN installé et configuré avec succès."
+else
+    echo "Installation du VPN annulée. Vous pourrez l'installer manuellement plus tard."
+fi
+echo "-----------------------------------------------------"
+echo "Étape 14: Installation et lancement du Back-End"
+echo "-----------------------------------------------------"
+
+WORKDIR="$HOME/Bureau"
+[ ! -d "$WORKDIR" ] && WORKDIR="$HOME/Desktop"
+[ ! -d "$WORKDIR" ] && WORKDIR="$HOME"
+
+echo "📁 Dossier sélectionné : $WORKDIR"
+cd "$WORKDIR"
+
+# 2. Cloner le dépôt si pas déjà présent
+if [ -d "Ryvie" ]; then
+    echo "✅ Le dépôt Ryvie-rPictures existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie Backend"
+    git clone https://github.com/maisonnavejul/Ryvie.git
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt. Arrêt du script."
+        exit 1
+    fi
+fi
+
+# Aller dans le dossier cloné
+cd Ryvie || { echo "Le dossier Ryvie est introuvable"; exit 1; }
+
+# Passer sur la branche Back-End
+git switch Back-End || { echo "Échec du passage à la branche Back-End"; exit 1; }
+
+# Aller dans le dossier du backend
+cd Ryvie-Back || { echo "Le dossier Ryvie-Back est introuvable"; exit 1; }
+
+# Lancer le serveur Node.js
+node index.js
+
+
+echo "Tout est prêt 🎉"
 
 
 newgrp docker
