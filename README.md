@@ -1,2 +1,2 @@
 # RyvieOS
-curl -fsSL https://raw.githubusercontent.com/maisonnavejul/RyvieOS/acc/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/maisonnavejul/RyvieOS/tst/install.sh | bash
