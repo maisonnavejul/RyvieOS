@@ -485,7 +485,7 @@ if [ -d "Ryvie-rTransfer" ]; then
     echo "✅ Le dépôt Ryvie-rTransfer existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rTransfer..."
-    git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git
+    git clone https://github.com/$GITHUB_USER/Ryvie-rTransfer.git
     if [ $? -ne 0 ]; then
         echo "❌ Échec du clonage du dépôt. Arrêt du script."
         exit 1
@@ -567,7 +567,7 @@ if [ -d "Ryvie" ]; then
     echo "✅ Le dépôt Ryvie-rPictures existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie Backend"
-    git clone https://github.com/maisonnavejul/Ryvie.git
+    git clone https://github.com/$GITHUB_USER/Ryvie.git
     if [ $? -ne 0 ]; then
         echo "❌ Échec du clonage du dépôt. Arrêt du script."
         exit 1
