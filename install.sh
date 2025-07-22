@@ -206,7 +206,7 @@ echo ""
  echo "-----------------------------------------------------"
  echo "Etape 9: Ip du cloud Ryvie ryvie.local"
  echo "-----------------------------------------------------"
-sudo apt update && sudo apt install -y avahi-daemon avahi-utils && sudo systemctl enable --now avahi-daemon && sudo sed -i 's/^#\s*host-name=.*/host-name=ryvievmtest/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
+sudo apt update && sudo apt install -y avahi-daemon avahi-utils && sudo systemctl enable --now avahi-daemon && sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
  echo ""
 echo "Etape 10: Configuration d'OpenLDAP avec Docker Compose"
 echo "-----------------------------------------------------"
