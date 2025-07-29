@@ -72,7 +72,35 @@ echo "------------------------------------------"
 echo " Vérification et installation de npm "
 echo "------------------------------------------"
 echo ""
+GITHUB_USER="1-thegreenprogrammer"        # Remplace par TON nom d'utilisateur GitHub
+GITHUB_TOKEN="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"  # ⚠️ Remplace par TON token (jamais le token du propriétaire)
 
+# Dépôts sur lesquels tu es invité
+REPOS=(
+    "Ryvie-rPictures"
+    "Ryvie-rTransfer"
+    "Ryvie-rdrop"
+    "Ryvie"
+)
+
+OWNER="maisonnavejul"
+
+WORKDIR="$HOME/Bureau"
+[[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME/Desktop"
+[[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME"
+
+cd "$WORKDIR"
+
+for repo in "${REPOS[@]}"; do
+    if [[ ! -d "$repo" ]]; then
+        repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
+        log "📥 Clonage du dépôt $repo (branche tst)..."
+        git clone --branch tst "$repo_url" "$repo"
+        CREATED_DIRS+=("$WORKDIR/$repo")
+    else
+        log "✅ Dépôt déjà cloné: $repo"
+    fi
+done
 # Vérifier si npm est installé
 if command -v npm > /dev/null 2>&1; then
     echo "npm est déjà installé : $(npm --version)"
@@ -192,7 +220,7 @@ echo ""
  echo "Etape 8:Clonage des dépôts Git nécessaires  "
  echo "--------------------------------------------------"
  echo ""
- sudo ./script.bash
+
  
 echo ""
  echo "--------------------------------------------------"
@@ -222,6 +250,7 @@ echo "-----------------------------------------------------"
 LDAP_DIR="$HOME/Bureau"
 [ ! -d "$LDAP_DIR" ] && LDAP_DIR="$HOME/Desktop"
 [ ! -d "$LDAP_DIR" ] && LDAP_DIR="$HOME"
+sudo docker network prune -f
 
 mkdir -p "$LDAP_DIR/ldap"
 cd "$LDAP_DIR/ldap"
