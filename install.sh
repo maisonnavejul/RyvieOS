@@ -1,171 +1,4 @@
 #!/bin/bash
-
-# =======================================================================
-# Script d'installation Ryvie OS avec gestion d'erreurs et rollback
-# Par Jules Maisonnave
-# =======================================================================
-
-set -euo pipefail  # Arrêt immédiat en cas d'erreur
-
-# Variables globales pour le rollback
-ROLLBACK_LOG="/tmp/ryvie_rollback.log"
-BACKUP_DIR="/tmp/ryvie_backup_$(date +%Y%m%d_%H%M%S)"
-INSTALLED_PACKAGES=()
-CREATED_DIRS=()
-DOCKER_CONTAINERS=()
-DOCKER_IMAGES=()
-MODIFIED_FILES=()
-
-# Fonction de logging
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$ROLLBACK_LOG"
-}
-
-# Fonction d'erreur avec rollback automatique
-error_exit() {
-    local line_number=$1
-    local error_code=$2
-    log "❌ ERREUR: Ligne $line_number, Code d'erreur: $error_code"
-    log "🔄 Début du rollback automatique..."
-    perform_rollback
-    exit $error_code
-}
-
-# Piège pour capturer les erreurs
-trap 'error_exit ${LINENO} $?' ERR
-
-# Fonction de sauvegarde de fichier
-backup_file() {
-    local file="$1"
-    if [[ -f "$file" ]]; then
-        mkdir -p "$BACKUP_DIR/$(dirname "$file")"
-        cp "$file" "$BACKUP_DIR/$file"
-        MODIFIED_FILES+=("$file")
-        log "💾 Sauvegarde: $file"
-    fi
-}
-
-# Fonction de rollback complet
-perform_rollback() {
-    log "🚨 ROLLBACK EN COURS..."
-    
-    # Arrêter et supprimer les conteneurs Docker créés
-    for container in "${DOCKER_CONTAINERS[@]}"; do
-        if docker ps -a --format '{{.Names}}' | grep -q "^${container}$"; then
-            log "🐳 Arrêt du conteneur: $container"
-            docker stop "$container" 2>/dev/null || true
-            docker rm "$container" 2>/dev/null || true
-        fi
-    done
-    
-    # Supprimer les images Docker téléchargées
-    for image in "${DOCKER_IMAGES[@]}"; do
-        if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${image}$"; then
-            log "🐳 Suppression de l'image Docker: $image"
-            docker rmi "$image" 2>/dev/null || true
-        fi
-    done
-    
-    # Supprimer les volumes Docker
-    docker volume prune -f 2>/dev/null || true
-    
-    # Restaurer les fichiers modifiés
-    for file in "${MODIFIED_FILES[@]}"; do
-        if [[ -f "$BACKUP_DIR/$file" ]]; then
-            cp "$BACKUP_DIR/$file" "$file"
-            log "📁 Restauré: $file"
-        fi
-    done
-    
-    # Supprimer les dossiers créés (en ordre inverse)
-    for ((i=${#CREATED_DIRS[@]}-1; i>=0; i--)); do
-        dir="${CREATED_DIRS[i]}"
-        if [[ -d "$dir" ]]; then
-            rm -rf "$dir"
-            log "🗂️ Supprimé: $dir"
-        fi
-    done
-    
-    # Supprimer les paquets installés
-    for package in "${INSTALLED_PACKAGES[@]}"; do
-        if dpkg -l | grep -q "^ii.*$package "; then
-            log "📦 Désinstallation: $package"
-            sudo apt remove -y "$package" 2>/dev/null || true
-        fi
-    done
-    
-    # Nettoyer apt
-    sudo apt autoremove -y 2>/dev/null || true
-    sudo apt autoclean 2>/dev/null || true
-    
-    # Retirer l'utilisateur du groupe docker s'il a été ajouté
-    if id -nG "$USER" | grep -qw "docker"; then
-        sudo deluser "$USER" docker 2>/dev/null || true
-        log "👤 Utilisateur retiré du groupe docker"
-    fi
-    
-    # Supprimer le dossier de sauvegarde
-    rm -rf "$BACKUP_DIR" 2>/dev/null || true
-    
-    log "✅ Rollback terminé. Toutes les modifications ont été annulées."
-}
-
-# Function de vérification de commande
-check_command() {
-    local cmd="$1"
-    local package="$2"
-    
-    if ! command -v "$cmd" &> /dev/null; then
-        log "📦 Installation de $package..."
-        sudo apt update
-        sudo apt install -y "$package"
-        INSTALLED_PACKAGES+=("$package")
-        
-        # Vérifier que l'installation a réussi
-        if ! command -v "$cmd" &> /dev/null; then
-            log "❌ Échec de l'installation de $package"
-            return 1
-        fi
-        log "✅ $package installé avec succès"
-    else
-        log "✅ $cmd déjà disponible"
-    fi
-}
-
-# Fonction pour créer un dossier de manière sécurisée
-create_directory() {
-    local dir="$1"
-    if [[ ! -d "$dir" ]]; then
-        mkdir -p "$dir"
-        CREATED_DIRS+=("$dir")
-        log "📁 Dossier créé: $dir"
-    fi
-}
-
-# Fonction pour télécharger et lancer un conteneur Docker
-docker_run_container() {
-    local image="$1"
-    local container_name="$2"
-    shift 2
-    local docker_args=("$@")
-    
-    # Ajouter l'image à la liste pour le rollback
-    DOCKER_IMAGES+=("$image")
-    DOCKER_CONTAINERS+=("$container_name")
-    
-    # Pull de l'image
-    log "🐳 Téléchargement de l'image Docker: $image"
-    docker pull "$image"
-    
-    # Lancement du conteneur
-    log "🐳 Lancement du conteneur: $container_name"
-    docker run "${docker_args[@]}" --name "$container_name" "$image"
-}
-
-# =====================================================
-# DÉBUT DU SCRIPT PRINCIPAL
-# =====================================================
-
 echo ""
 echo "
   _____             _         ____   _____ 
@@ -180,18 +13,14 @@ echo "
 echo ""
 echo "Bienvenue sur Ryvie OS 🚀"
 echo "By Jules Maisonnave"
-echo "Installation sécurisée avec rollback automatique en cas d'erreur"
-
-# Initialisation du log
-log "🚀 Début de l'installation Ryvie OS"
-mkdir -p "$BACKUP_DIR"
+echo "Ce script est un test : aucune installation n'est effectuée pour le moment."
 
 # =====================================================
 # Étape 1: Vérification des prérequis système
 # =====================================================
-log "----------------------------------------------------"
-log "Étape 1: Vérification des prérequis système"
-log "----------------------------------------------------"
+echo "----------------------------------------------------"
+echo "Étape 1: Vérification des prérequis système"
+echo "----------------------------------------------------"
 
 # 1. Vérification de l'architecture
 ARCH=$(uname -m)
@@ -206,181 +35,199 @@ case "$ARCH" in
         TARGET_ARCH="arm-7"
         ;;
     *)
-        log "❌ Architecture non supportée: $ARCH"
+        echo "Erreur: Architecture non supportée: $ARCH"
         exit 1
         ;;
 esac
-log "✅ Architecture détectée: $ARCH ($TARGET_ARCH)"
+echo "Architecture détectée: $ARCH ($TARGET_ARCH)"
 
 # 2. Vérification du système d'exploitation
 OS=$(uname -s)
-if [[ "$OS" != "Linux" ]]; then
-    log "❌ Ce script est conçu uniquement pour Linux. OS détecté: $OS"
+if [ "$OS" != "Linux" ]; then
+    echo "Erreur: Ce script est conçu uniquement pour Linux. OS détecté: $OS"
     exit 1
 fi
-log "✅ Système d'exploitation: $OS"
+echo "Système d'exploitation: $OS"
 
 # 3. Vérification de la mémoire physique (minimum 400 MB)
 MEMORY=$(free -m | awk '/Mem:/ {print $2}')
 MIN_MEMORY=400
-if [[ "$MEMORY" -lt "$MIN_MEMORY" ]]; then
-    log "❌ Mémoire insuffisante. ${MEMORY} MB détectés, minimum requis: ${MIN_MEMORY} MB."
+if [ "$MEMORY" -lt "$MIN_MEMORY" ]; then
+    echo "Erreur: Mémoire insuffisante. ${MEMORY} MB détectés, minimum requis: ${MIN_MEMORY} MB."
     exit 1
 fi
-log "✅ Mémoire disponible: ${MEMORY} MB"
+echo "Mémoire disponible: ${MEMORY} MB (OK)"
 
 # 4. Vérification de l'espace disque libre sur la racine (minimum 5 GB)
 FREE_DISK_KB=$(df -k / | tail -1 | awk '{print $4}')
 FREE_DISK_GB=$(( FREE_DISK_KB / 1024 / 1024 ))
 MIN_DISK_GB=5
-if [[ "$FREE_DISK_GB" -lt "$MIN_DISK_GB" ]]; then
-    log "❌ Espace disque insuffisant. ${FREE_DISK_GB} GB détectés, minimum requis: ${MIN_DISK_GB} GB."
+if [ "$FREE_DISK_GB" -lt "$MIN_DISK_GB" ]; then
+    echo "Erreur: Espace disque insuffisant. ${FREE_DISK_GB} GB détectés, minimum requis: ${MIN_DISK_GB} GB."
     exit 1
 fi
-log "✅ Espace disque libre: ${FREE_DISK_GB} GB"
+echo "Espace disque libre: ${FREE_DISK_GB} GB (OK)"
+echo ""
+echo "------------------------------------------"
+echo " Vérification et installation de npm "
+echo "------------------------------------------"
+echo ""
 
-# =====================================================
-# Étape 2: Installation de npm
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 2: Vérification et installation de npm"
-log "----------------------------------------------------"
-
-check_command "npm" "npm"
-
-# =====================================================
-# Étape 3: Installation de Node.js
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 3: Vérification et installation de Node.js"
-log "----------------------------------------------------"
-
-if command -v node &> /dev/null && [[ "$(node -v | cut -d 'v' -f2 | cut -d '.' -f1)" -ge 14 ]]; then
-    log "✅ Node.js est déjà installé: $(node --version)"
+# Vérifier si npm est installé
+if command -v npm > /dev/null 2>&1; then
+    echo "npm est déjà installé : $(npm --version)"
 else
-    log "📦 Installation de Node.js..."
-    
+    echo "npm n'est pas installé. Installation en cours..."
+    sudo apt update
+    sudo apt install -y npm
+    # Vérification après installation
+    if command -v npm > /dev/null 2>&1; then
+        echo "npm a été installé avec succès : $(npm --version)"
+    else
+        echo "Erreur: L'installation de npm a échoué."
+        exit 1
+    fi
+fi
+
+echo ""
+echo "------------------------------------------"
+echo " Étape 5 : Vérification et installation de Node.js "
+echo "------------------------------------------"
+echo ""
+
+# Vérifie si Node.js est installé et s'il est à jour (v14 ou plus)
+if command -v node > /dev/null 2>&1 && [ "$(node -v | cut -d 'v' -f2 | cut -d '.' -f1)" -ge 14 ]; then
+    echo "Node.js est déjà installé : $(node --version)"
+else
+    echo "Node.js est manquant ou trop ancien. Installation de la version stable avec 'n'..."
+
     # Installer 'n' si absent
-    if ! command -v n &> /dev/null; then
-        log "📦 Installation de 'n' (Node version manager)..."
+    if ! command -v n > /dev/null 2>&1; then
+        echo "Installation de 'n' (Node version manager)..."
         sudo npm install -g n
     fi
-    
-    # Installer Node.js stable
+
+    # Installer Node.js stable (la plus récente)
     sudo n stable
-    
+
     # Corriger la session shell
     export PATH="/usr/local/bin:$PATH"
     hash -r
-    
+
     # Vérification après installation
-    if ! command -v node &> /dev/null; then
-        log "❌ L'installation de Node.js a échoué"
+    if command -v node > /dev/null 2>&1; then
+        echo "Node.js a été installé avec succès : $(node --version)"
+    else
+        echo "Erreur : l'installation de Node.js a échoué."
         exit 1
     fi
-    log "✅ Node.js installé: $(node --version)"
 fi
 
-# =====================================================
-# Étape 4: Installation des dépendances Node.js
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 4: Installation des dépendances Node.js"
-log "----------------------------------------------------"
-
+# 6. Vérification des dépendances 
+echo "----------------------------------------------------"
+echo "Etape 6: Vérification des dépendances"
+echo "----------------------------------------------------"
+# Installer les dépendances Node.js
+#npm install express cors http socket.io os dockerode ldapjs
 npm install express cors socket.io dockerode diskusage systeminformation ldapjs dotenv jsonwebtoken os-utils --save
-
-check_command "ldapsearch" "ldap-utils"
-
-log "✅ Toutes les dépendances Node.js ont été installées"
-
-# =====================================================
-# Étape 5: Installation et vérification de Docker
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 5: Vérification et installation de Docker"
-log "----------------------------------------------------"
-
-if command -v docker &> /dev/null; then
-    log "✅ Docker est déjà installé: $(docker --version)"
+sudo apt install -y ldap-utils
+# Vérifier le code de retour de npm install
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "Tous les modules ont été installés avec succès."
 else
-    log "📦 Installation de Docker..."
-    
-    # Mettre à jour les paquets
+    echo ""
+    echo "Erreur lors de l'installation d'un ou plusieurs modules."
+fi
+# =====================================================
+# Étape 7: Vérification de Docker et installation si nécessaire
+# =====================================================
+echo "----------------------------------------------------"
+echo "Étape 7: Vérification de Docker"
+echo "----------------------------------------------------"
+
+if command -v docker > /dev/null 2>&1; then
+    echo "Docker est déjà installé : $(docker --version)"
+    echo "Vérification de Docker en exécutant 'docker run hello-world'..."
+    sudo docker run hello-world
+    if [ $? -eq 0 ]; then
+        echo "Docker fonctionne correctement."
+    else
+        echo "Erreur: Docker a rencontré un problème lors de l'exécution du test."
+    fi
+else
+    echo "Docker n'est pas installé. L'installation va débuter..."
+
+    ### 🐳 1. Mettre à jour les paquets
     sudo apt update
     sudo apt upgrade -y
-    
-    # Installer les dépendances
+
+    ### 🐳 2. Installer les dépendances nécessaires
     sudo apt install -y ca-certificates curl gnupg lsb-release
-    INSTALLED_PACKAGES+=(ca-certificates curl gnupg lsb-release)
-    
-    # Ajouter la clé GPG officielle de Docker
+
+    ### 🐳 3. Ajouter la clé GPG officielle de Docker
     sudo mkdir -p /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    
-    # Ajouter le dépôt Docker
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-    
-    # Installer Docker Engine + Docker Compose plugin
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+        sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+    ### 🐳 4. Ajouter le dépôt Docker
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+        sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    ### 🐳 5. Installer Docker Engine + Docker Compose plugin
     sudo apt update
     sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    INSTALLED_PACKAGES+=(docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin)
+
+    ### ✅ 6. Vérifier que Docker fonctionne
+    echo "Vérification de Docker en exécutant 'docker run hello-world'..."
+    sudo docker run hello-world
+    if [ $? -eq 0 ]; then
+        echo "Docker a été installé et fonctionne correctement."
+    else
+        echo "Erreur lors de l'installation ou de la vérification de Docker."
+    fi
 fi
+echo ""
+ echo "--------------------------------------------------"
+ echo "Etape 8:Clonage des dépôts Git nécessaires  "
+ echo "--------------------------------------------------"
+ echo ""
+ sudo ./script.bash
+ 
+echo ""
+ echo "--------------------------------------------------"
+ echo "Etape 8: Ajout de l'utilisateur ($USER) au groupe docker "
+ echo "--------------------------------------------------"
+ echo ""
+ 
+ # Vérifier si l'utilisateur est déjà dans le groupe docker
+ if id -nG "$USER" | grep -qw "docker"; then
+     echo "L'utilisateur $USER est déjà membre du groupe docker."
+ else
+     # Ajouter l'utilisateur actuel au groupe docker et appliquer la modification
+     sudo usermod -aG docker $USER
+     echo "L'utilisateur $USER a été ajouté au groupe docker."
+     echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
+ fi
+ 
+ echo "-----------------------------------------------------"
+ echo "Etape 9: Ip du cloud Ryvie ryvie.local"
+ echo "-----------------------------------------------------"
+sudo apt update && sudo apt install -y avahi-daemon avahi-utils && sudo systemctl enable --now avahi-daemon && sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
+ echo ""
+echo "Etape 10: Configuration d'OpenLDAP avec Docker Compose"
+echo "-----------------------------------------------------"
 
-# Test de Docker
-log "🧪 Test de Docker avec hello-world..."
-sudo docker run --rm hello-world
-log "✅ Docker fonctionne correctement"
-
-# =====================================================
-# Étape 6: Ajout de l'utilisateur au groupe docker
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 6: Ajout de l'utilisateur ($USER) au groupe docker"
-log "----------------------------------------------------"
-
-if ! id -nG "$USER" | grep -qw "docker"; then
-    sudo usermod -aG docker "$USER"
-    log "✅ Utilisateur $USER ajouté au groupe docker"
-else
-    log "✅ L'utilisateur $USER est déjà membre du groupe docker"
-fi
-
-# =====================================================
-# Étape 7: Configuration du hostname ryvie.local
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 7: Configuration du hostname ryvie.local"
-log "----------------------------------------------------"
-
-check_command "avahi-daemon" "avahi-daemon"
-check_command "avahi-browse" "avahi-utils"
-
-# Sauvegarder et modifier la configuration avahi
-backup_file "/etc/avahi/avahi-daemon.conf"
-sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf
-sudo systemctl enable --now avahi-daemon
-sudo systemctl restart avahi-daemon
-
-log "✅ Hostname ryvie.local configuré"
-
-# =====================================================
-# Étape 8: Configuration d'OpenLDAP avec Docker Compose
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 8: Configuration d'OpenLDAP avec Docker Compose"
-log "----------------------------------------------------"
-
-# Déterminer le dossier de travail
+# 1. Créer le dossier ldap sur le Bureau ou Desktop et s'y positionner
 LDAP_DIR="$HOME/Bureau"
-[[ ! -d "$LDAP_DIR" ]] && LDAP_DIR="$HOME/Desktop"
-[[ ! -d "$LDAP_DIR" ]] && LDAP_DIR="$HOME"
+[ ! -d "$LDAP_DIR" ] && LDAP_DIR="$HOME/Desktop"
+[ ! -d "$LDAP_DIR" ] && LDAP_DIR="$HOME"
 
-create_directory "$LDAP_DIR/ldap"
+mkdir -p "$LDAP_DIR/ldap"
 cd "$LDAP_DIR/ldap"
 
-# Créer le fichier docker-compose.yml
-cat > docker-compose.yml << 'EOF'
+# 2. Créer le fichier docker-compose.yml pour lancer OpenLDAP
+cat <<'EOF' > docker-compose.yml
 version: '3.8'
 
 services:
@@ -388,12 +235,12 @@ services:
     image: bitnami/openldap:latest
     container_name: openldap
     environment:
-      - LDAP_ADMIN_USERNAME=admin
-      - LDAP_ADMIN_PASSWORD=adminpassword
-      - LDAP_ROOT=dc=example,dc=org
+      - LDAP_ADMIN_USERNAME=admin           # Nom d'utilisateur admin LDAP
+      - LDAP_ADMIN_PASSWORD=adminpassword   # Mot de passe admin
+      - LDAP_ROOT=dc=example,dc=org         # Domaine racine de l'annuaire
     ports:
-      - "389:1389"
-      - "636:1636"
+      - "389:1389"  # Port LDAP
+      - "636:1636"  # Port LDAP sécurisé
     networks:
       my_custom_network:
         ipv4_address: 172.20.0.2
@@ -411,34 +258,34 @@ networks:
         - subnet: 172.20.0.0/24
 EOF
 
-# Lancer OpenLDAP
-DOCKER_CONTAINERS+=("openldap")
-DOCKER_IMAGES+=("bitnami/openldap:latest")
-
-log "🐳 Lancement d'OpenLDAP..."
+# 3. Lancer le conteneur OpenLDAP
 sudo docker compose up -d
 
-# Attendre que le service soit prêt
-log "⏳ Attente de la disponibilité d'OpenLDAP..."
-local max_attempts=30
-local attempt=0
+# 4. Attendre que le conteneur soit prêt
+echo "Attente de la disponibilité du service OpenLDAP..."
 until ldapsearch -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -b "dc=example,dc=org" >/dev/null 2>&1; do
     sleep 2
-    ((attempt++))
-    if [[ $attempt -gt $max_attempts ]]; then
-        log "❌ Timeout: OpenLDAP n'est pas disponible après ${max_attempts} tentatives"
-        exit 1
-    fi
     echo -n "."
 done
 echo ""
-log "✅ OpenLDAP est prêt"
+echo "✅ OpenLDAP est prêt."
 
-# Configuration des utilisateurs et groupes LDAP
-log "👥 Configuration des utilisateurs LDAP..."
+# 5. Supprimer d'anciens utilisateurs et groupes indésirables
+cat <<'EOF' > delete-entries.ldif
+dn: cn=user01,ou=users,dc=example,dc=org
+changetype: delete
 
-# Créer les utilisateurs
-cat > add-users.ldif << 'EOF'
+dn: cn=user02,ou=users,dc=example,dc=org
+changetype: delete
+
+dn: cn=readers,ou=groups,dc=example,dc=org
+changetype: delete
+EOF
+
+ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f delete-entries.ldif
+
+# 6. Créer les utilisateurs via add-users.ldif
+cat <<'EOF' > add-users.ldif
 dn: cn=jules,ou=users,dc=example,dc=org
 objectClass: inetOrgPerson
 objectClass: posixAccount
@@ -470,13 +317,18 @@ EOF
 
 ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f add-users.ldif
 
-# Créer les groupes
-cat > add-groups.ldif << 'EOF'
+# 7. Tester l'accès de l'utilisateur "Test"
+ldapwhoami -x -H ldap://localhost:389 -D "cn=Test,ou=users,dc=example,dc=org" -w testpassword
+
+# 8. Créer les groupes via add-groups.ldif
+cat <<'EOF' > add-groups.ldif
+# Groupe admins
 dn: cn=admins,ou=users,dc=example,dc=org
 objectClass: groupOfNames
 cn: admins
 member: cn=jules,ou=users,dc=example,dc=org
 
+# Groupe users
 dn: cn=users,ou=users,dc=example,dc=org
 objectClass: groupOfNames
 cn: users
@@ -485,8 +337,27 @@ EOF
 
 ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f add-groups.ldif
 
-# Créer l'utilisateur read-only
-cat > read-only-user.ldif << 'EOF'
+# ==================================================================
+# Partie ACL : Configuration de l'accès read-only et des droits admins
+# ==================================================================
+
+echo ""
+echo "-----------------------------------------------------"
+echo "Configuration de l'utilisateur read-only et de ses ACL"
+echo "-----------------------------------------------------"
+
+# 1. Créer le fichier ACL lecture seule
+cat <<'EOF' > acl-read-only.ldif
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+add: olcAccess
+olcAccess: to dn.subtree="ou=users,dc=example,dc=org"
+  by dn.exact="cn=read-only,ou=users,dc=example,dc=org" read
+  by * none
+EOF
+
+# 2. Créer l'utilisateur read-only
+cat <<'EOF' > read-only-user.ldif
 dn: cn=read-only,ou=users,dc=example,dc=org
 objectClass: inetOrgPerson
 objectClass: organizationalPerson
@@ -497,80 +368,143 @@ uid: read-only
 userPassword: readpassword
 EOF
 
+echo "Ajout de l'utilisateur read-only..."
 ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f read-only-user.ldif
 
-log "✅ Configuration LDAP terminée"
+echo "Copie du fichier ACL read-only dans le conteneur OpenLDAP..."
+sudo docker cp acl-read-only.ldif openldap:/tmp/acl-read-only.ldif
 
-# =====================================================
-# Étape 9: Installation de Ryvie rPictures
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 9: Installation de Ryvie rPictures"
-log "----------------------------------------------------"
+echo "Application de la configuration ACL read-only..."
+sudo docker exec -it openldap ldapmodify -Y EXTERNAL -H ldapi:/// -f /tmp/acl-read-only.ldif
 
+echo "Test de l'accès en lecture seule avec l'utilisateur read-only..."
+ldapsearch -x -D "cn=read-only,ou=users,dc=example,dc=org" -w readpassword -b "ou=users,dc=example,dc=org" "(objectClass=*)"
+
+# --- ACL pour admins (droits écriture) ---
+echo ""
+echo "-----------------------------------------------------"
+echo "Configuration des droits d'écriture pour le groupe admins"
+echo "-----------------------------------------------------"
+
+cat <<'EOF' > acl-admin-write.ldif
+dn: olcDatabase={2}mdb,cn=config
+changetype: modify
+add: olcAccess
+olcAccess: to dn.subtree="ou=users,dc=example,dc=org"
+  by group.exact="cn=admins,ou=users,dc=example,dc=org" write
+  by * read
+EOF
+
+echo "Copie du fichier acl-admin-write.ldif dans le conteneur OpenLDAP..."
+sudo docker cp acl-admin-write.ldif openldap:/tmp/acl-admin-write.ldif
+
+echo "Application de la configuration ACL (droits d'écriture pour le groupe admins)..."
+sudo docker exec -it openldap ldapmodify -Y EXTERNAL -H ldapi:/// -f /tmp/acl-admin-write.ldif
+
+echo "✅ Configuration ACL pour le groupe admins appliquée."
+
+ echo " ( à implémenter non mis car mdp dedans )"
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 11: Installation de Ryvie rPictures et synchronisation LDAP"
+echo "-----------------------------------------------------"
+
+# 1. Aller sur le Bureau ou Desktop
 WORKDIR="$HOME/Bureau"
-[[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME/Desktop"
-[[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME"
+[ ! -d "$WORKDIR" ] && WORKDIR="$HOME/Desktop"
+[ ! -d "$WORKDIR" ] && WORKDIR="$HOME"
 
+
+echo "📁 Dossier sélectionné : $WORKDIR"
 cd "$WORKDIR"
 
-if [[ ! -d "Ryvie-rPictures" ]]; then
-    log "📥 Clonage du dépôt Ryvie-rPictures..."
+# 2. Cloner le dépôt si pas déjà présent
+if [ -d "Ryvie-rPictures" ]; then
+    echo "✅ Le dépôt Ryvie-rPictures existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie-rPictures..."
     git clone https://github.com/maisonnavejul/Ryvie-rPictures.git
-    CREATED_DIRS+=("$WORKDIR/Ryvie-rPictures")
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt. Arrêt du script."
+        exit 1
+    fi
 fi
 
+
+# 3. Se placer dans le dossier docker
 cd Ryvie-rPictures/docker
 
-# Créer le fichier .env
-cat > .env << 'EOF'
+# 4. Créer le fichier .env avec les variables nécessaires
+echo "📝 Création du fichier .env..."
+
+cat <<EOF > .env
+# The location where your uploaded files are stored
 UPLOAD_LOCATION=./library
+
+# The location where your database files are stored
 DB_DATA_LOCATION=./postgres
+
+# Timezone
+# TZ=Etc/UTC
+
+# Immich version
 IMMICH_VERSION=release
+
+# Postgres password (change it in prod)
 DB_PASSWORD=postgres
+
+# Internal DB vars
 DB_USERNAME=postgres
 DB_DATABASE_NAME=immich
 EOF
 
-# Lancer rPictures
-log "🚀 Lancement de rPictures..."
+echo "✅ Fichier .env créé."
+
+# 5. Lancer les services Immich en mode production
+echo "🚀 Lancement de Immich (rPictures) avec Docker Compose..."
 sudo docker compose -f docker-compose.ryvie.yml up -d
 
-# Attendre le démarrage
-log "⏳ Attente du démarrage de rPictures..."
-local max_attempts=30
-local attempt=0
+# 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
+echo "⏳ Attente du démarrage d'Immich (port 2283)..."
 until curl -s http://localhost:2283 > /dev/null; do
     sleep 2
-    ((attempt++))
-    if [[ $attempt -gt $max_attempts ]]; then
-        log "❌ Timeout: rPictures n'est pas disponible"
-        exit 1
-    fi
     echo -n "."
 done
 echo ""
-log "✅ rPictures est lancé"
+echo "✅ rPictures est lancé."
 
-# =====================================================
-# Étape 10: Installation de Ryvie rTransfer
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 10: Installation de Ryvie rTransfer"
-log "----------------------------------------------------"
+# 7. Synchroniser les utilisateurs LDAP
+echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
 
+if [ "$RESPONSE" -eq 200 ]; then
+    echo "✅ Synchronisation LDAP réussie avec rPictures."
+else
+    echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
+fi
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 12: Installation de Ryvie rTransfer et synchronisation LDAP"
+echo "-----------------------------------------------------"
+
+# 1. Cloner le dépôt si pas déjà présent
 cd "$WORKDIR"
-
-if [[ ! -d "Ryvie-rTransfer" ]]; then
-    log "📥 Clonage du dépôt Ryvie-rTransfer..."
+if [ -d "Ryvie-rTransfer" ]; then
+    echo "✅ Le dépôt Ryvie-rTransfer existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie-rTransfer..."
     git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git
-    CREATED_DIRS+=("$WORKDIR/Ryvie-rTransfer")
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt. Arrêt du script."
+        exit 1
+    fi
 fi
 
-cd Ryvie-rTransfer
-
-# Sauvegarder et modifier la configuration
-backup_file "config.yaml"
+# 2. Se placer dans le dossier
+cd "$WORKDIR/Ryvie-rTransfer"
+pwd
+# 3. Mise à jour de la section LDAP dans le fichier config.yaml
+echo "🛠️ Mise à jour de la configuration LDAP dans config.yaml..."
 sed -i '/^ldap:/,/^[^ ]/c\
 ldap:\n\
   enabled: "true"\n\
@@ -583,123 +517,111 @@ ldap:\n\
   fieldNameMemberOf: employeeType\n\
   fieldNameEmail: mail' config.yaml
 
-# Lancer rTransfer
-log "🚀 Lancement de rTransfer..."
+echo "✅ Bloc LDAP modifié avec succès."
+
+# 4. Lancer rTransfer avec le fichier docker-compose.local.yml
+echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.local.yml..."
 sudo docker compose -f docker-compose.local.yml up -d
 
-# Attendre le démarrage
-log "⏳ Attente du démarrage de rTransfer..."
-local max_attempts=30
-local attempt=0
+# 5. Vérification du démarrage sur le port 3000
+echo "⏳ Attente du démarrage de rTransfer (port 3000)..."
 until curl -s http://localhost:3000 > /dev/null; do
     sleep 2
-    ((attempt++))
-    if [[ $attempt -gt $max_attempts ]]; then
-        log "❌ Timeout: rTransfer n'est pas disponible"
-        exit 1
-    fi
     echo -n "."
 done
 echo ""
-log "✅ rTransfer est lancé"
+echo "✅ rTransfer est lancé et prêt avec l’authentification LDAP."
 
-# =====================================================
-# Étape 11: Installation de Ryvie rDrop
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 11: Installation de Ryvie rDrop"
-log "----------------------------------------------------"
+echo ""
+echo "-----------------------------------------------------"
+echo "-----------------------------------------------------"
+echo "Étape 13: Installation de Ryvie rDrop"
+echo "-----------------------------------------------------"
 
 cd "$WORKDIR"
 
-if [[ ! -d "Ryvie-rdrop" ]]; then
-    log "📥 Clonage du dépôt Ryvie-rdrop..."
+if [ -d "Ryvie-rdrop" ]; then
+    echo "✅ Le dépôt Ryvie-rdrop existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie-rdrop..."
     git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
-    CREATED_DIRS+=("$WORKDIR/Ryvie-rdrop")
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt Ryvie-rdrop."
+        exit 1
+    fi
 fi
 
 cd Ryvie-rdrop/snapdrop-master/snapdrop-master
 
-chmod +x docker/openssl/create.sh
-docker compose up -d
+echo "✅ Répertoire atteint : $(pwd)"
 
-log "✅ rDrop est lancé"
-
-# =====================================================
-# Étape 12: Installation VPN (optionnelle)
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 12: Installation VPN NetBird (optionnelle)"
-log "----------------------------------------------------"
-
-echo "Pour permettre l'accès distant sécurisé à votre serveur Ryvie,"
-echo "nous proposons d'installer automatiquement un VPN."
-echo ""
-read -p "Souhaitez-vous installer le VPN NetBird ? (O/N) : " choix
-
-if [[ "$choix" == "O" || "$choix" == "o" ]]; then
-    log "📦 Installation du VPN NetBird..."
-    curl -fsSL https://pkgs.netbird.io/install.sh | sh
-    netbird up --management-url https://jules.test.ryvie.fr --admin-url https://jules.test.ryvie.fr --setup-key DB1A3E54-0FC1-4A9E-BBCD-31C75A25866E
-    log "✅ VPN installé et configuré"
+if [ -f docker/openssl/create.sh ]; then
+    chmod +x docker/openssl/create.sh
+    echo "✅ Script create.sh rendu exécutable."
 else
-    log "⏭️ Installation du VPN ignorée"
-fi
-
-# =====================================================
-# Étape 13: Installation et lancement du Back-End
-# =====================================================
-log "----------------------------------------------------"
-log "Étape 13: Installation et lancement du Back-End"
-log "----------------------------------------------------"
-
-cd "$WORKDIR"
-
-if [[ ! -d "Ryvie" ]]; then
-    log "📥 Clonage du dépôt Ryvie Backend..."
-    git clone https://github.com/maisonnavejul/Ryvie.git
-    CREATED_DIRS+=("$WORKDIR/Ryvie")
-fi
-
-cd Ryvie
-git switch Back-End
-cd Ryvie-Back
-
-log "🚀 Lancement du serveur Backend..."
-# Note: Cette commande va bloquer, donc on la lance en arrière-plan
-nohup node index.js > backend.log 2>&1 &
-BACKEND_PID=$!
-
-# Attendre quelques secondes pour vérifier que le backend démarre
-sleep 5
-if ! kill -0 $BACKEND_PID 2>/dev/null; then
-    log "❌ Le backend a échoué au démarrage"
+    echo "❌ Script docker/openssl/create.sh introuvable."
     exit 1
 fi
 
-log "✅ Backend lancé avec PID: $BACKEND_PID"
+echo "📦 Suppression des conteneurs orphelins et anciens réseaux..."
+sudo docker compose down --remove-orphans
+sudo docker network prune -f
+sudo docker compose up -d
 
-# =====================================================
-# INSTALLATION TERMINÉE AVEC SUCCÈS
-# =====================================================
-log "🎉🎉🎉 INSTALLATION RYVIE OS TERMINÉE AVEC SUCCÈS ! 🎉🎉🎉"
-log ""
-log "📋 Résumé des services lancés:"
-log "   • OpenLDAP: http://localhost:389"
-log "   • rPictures: http://localhost:2283"
-log "   • rTransfer: http://localhost:3000"
-log "   • rDrop: Vérifiez la configuration Docker"
-log "   • Backend API: En cours d'exécution (PID: $BACKEND_PID)"
-log ""
-log "⚠️  IMPORTANT: Redémarrez votre session pour appliquer les droits Docker"
-log "💡 Utilisez 'newgrp docker' ou reconnectez-vous"
-log ""
-log "📁 Logs d'installation: $ROLLBACK_LOG"
-log "💾 Sauvegarde des fichiers: $BACKUP_DIR"
+echo "-----------------------------------------------------"
+echo "Étape 14: Installation et lancement du Back-End"
+echo "-----------------------------------------------------"
 
-# Nettoyage du dossier de sauvegarde (optionnel)
-# rm -rf "$BACKUP_DIR"
+WORKDIR="$HOME/Bureau"
+[ ! -d "$WORKDIR" ] && WORKDIR="$HOME/Desktop"
+[ ! -d "$WORKDIR" ] && WORKDIR="$HOME"
 
-echo ""
-echo "🔄 Application des droits Docker pour la session actuelle..."
+echo "📁 Dossier sélectionné : $WORKDIR"
+cd "$WORKDIR"
+
+# 2. Cloner le dépôt si pas déjà présent
+if [ -d "Ryvie" ]; then
+    echo "✅ Le dépôt Ryvie-rPictures existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie Backend"
+    git clone https://github.com/maisonnavejul/Ryvie.git
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt. Arrêt du script."
+        exit 1
+    fi
+fi
+
+# Aller dans le dossier cloné
+cd Ryvie || { echo "Le dossier Ryvie est introuvable"; exit 1; }
+
+# Passer sur la branche Back-End
+git switch Back-End || { echo "Échec du passage à la branche Back-End"; exit 1; }
+
+# Aller dans le dossier du backend
+cd Ryvie-Back || { echo "Le dossier Ryvie-Back est introuvable"; exit 1; }
+cat <<EOF > .env
+PORT=3002
+JWT_SECRET=dQMsVQS39XkJRCHsAhJn3Hn2
+
+# Configuration LDAP
+LDAP_URL=ldap://localhost:389
+LDAP_BIND_DN=cn=read-only,ou=users,dc=example,dc=org
+LDAP_BIND_PASSWORD=readpassword
+LDAP_USER_SEARCH_BASE=ou=users,dc=example,dc=org
+LDAP_GROUP_SEARCH_BASE=ou=users,dc=example,dc=org
+LDAP_USER_FILTER=(objectClass=inetOrgPerson)
+LDAP_GROUP_FILTER=(objectClass=groupOfNames)
+LDAP_ADMIN_GROUP=cn=admins,ou=users,dc=example,dc=org
+LDAP_USER_GROUP=cn=users,ou=users,dc=example,dc=org
+LDAP_GUEST_GROUP=cn=guests,ou=users,dc=example,dc=org
+EOF
+
+echo "✅ Fichier .env créé."
+# Lancer le serveur Node.js
+node index.js
+
+
+echo "Tout est prêt 🎉"
+
+
 newgrp docker
