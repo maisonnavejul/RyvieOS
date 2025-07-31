@@ -215,13 +215,7 @@ else
         echo "Erreur lors de l'installation ou de la vérification de Docker."
     fi
 fi
-echo ""
- echo "--------------------------------------------------"
- echo "Etape 8:Clonage des dépôts Git nécessaires  "
- echo "--------------------------------------------------"
- echo ""
 
- 
 echo ""
  echo "--------------------------------------------------"
  echo "Etape 8: Ajout de l'utilisateur ($USER) au groupe docker "
@@ -647,7 +641,7 @@ EOF
 
 echo "✅ Fichier .env créé."
 # Lancer le serveur Node.js
-node index.js
+sudo node index.js
 
 
 echo "Tout est prêt 🎉"
