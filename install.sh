@@ -72,8 +72,7 @@ echo "------------------------------------------"
 echo " Vérification et installation de npm "
 echo "------------------------------------------"
 echo ""
-GITHUB_USER="1-thegreenprogrammer"        # Remplace par TON nom d'utilisateur GitHub
-GITHUB_TOKEN="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"  # ⚠️ Remplace par TON token (jamais le token du propriétaire)
+
 
 # Dépôts sur lesquels tu es invité
 REPOS=(
@@ -83,39 +82,90 @@ REPOS=(
     "Ryvie"
 )
 
-OWNER="maisonnavejul"
 
+# Demander la branche à cloner
+read -p "Quelle branche veux-tu cloner ? " BRANCH
+if [[ -z "$BRANCH" ]]; then
+    echo "❌ Branche invalide. Annulation."
+    exit 1
+fi
+
+# Fonction de vérification des identifiants
+verify_credentials() {
+    local user="$1"
+    local token="$2"
+    local status_code
+
+    status_code=$(curl -s -o /dev/null -w "%{http_code}" -u "$user:$token" https://api.github.com/user)
+    [[ "$status_code" == "200" ]]
+}
+
+# Demander les identifiants GitHub s'ils ne sont pas valides
+while true; do
+    if [[ -z "$GITHUB_USER" ]]; then
+        read -p "Entrez votre nom d'utilisateur GitHub : " GITHUB_USER
+    fi
+
+    if [[ -z "$GITHUB_TOKEN" ]]; then
+        read -s -p "Entrez votre token GitHub personnel : " GITHUB_TOKEN
+        echo
+    fi
+
+    if verify_credentials "$GITHUB_USER" "$GITHUB_TOKEN"; then
+        echo "✅ Authentification GitHub réussie."
+        break
+    else
+        echo "❌ Authentification échouée. Veuillez réessayer."
+        unset GITHUB_USER
+        unset GITHUB_TOKEN
+    fi
+done
+
+# Déterminer le répertoire de travail
 WORKDIR="$HOME/Bureau"
 [[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME/Desktop"
 [[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME"
 
-cd "$WORKDIR"
+cd "$WORKDIR" || exit 1
 
+CREATED_DIRS=()
+
+log() {
+    echo -e "$1"
+}
+OWNER="maisonnavejul"
+# Clonage des dépôts
 for repo in "${REPOS[@]}"; do
     if [[ ! -d "$repo" ]]; then
         repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
-        log "📥 Clonage du dépôt $repo (branche tst)..."
-        git clone --branch tst "$repo_url" "$repo"
-        CREATED_DIRS+=("$WORKDIR/$repo")
+        log "📥 Clonage du dépôt $repo (branche $BRANCH)..."
+        git clone --branch "$BRANCH" "$repo_url" "$repo"
+        if [[ $? -eq 0 ]]; then
+            CREATED_DIRS+=("$WORKDIR/$repo")
+        else
+            log "❌ Échec du clonage du dépôt : $repo"
+        fi
     else
         log "✅ Dépôt déjà cloné: $repo"
     fi
 done
+
 # Vérifier si npm est installé
 if command -v npm > /dev/null 2>&1; then
-    echo "npm est déjà installé : $(npm --version)"
+    echo "✅ npm est déjà installé : $(npm --version)"
 else
-    echo "npm n'est pas installé. Installation en cours..."
+    echo "⚙️ npm n'est pas installé. Installation en cours..."
     sudo apt update
     sudo apt install -y npm
-    # Vérification après installation
+
     if command -v npm > /dev/null 2>&1; then
-        echo "npm a été installé avec succès : $(npm --version)"
+        echo "✅ npm a été installé avec succès : $(npm --version)"
     else
-        echo "Erreur: L'installation de npm a échoué."
+        echo "❌ Erreur: L'installation de npm a échoué."
         exit 1
     fi
 fi
+
 
 echo ""
 echo "------------------------------------------"
