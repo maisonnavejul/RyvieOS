@@ -73,21 +73,99 @@ echo " Vérification et installation de npm "
 echo "------------------------------------------"
 echo ""
 
+
+# Dépôts sur lesquels tu es invité
+REPOS=(
+    "Ryvie-rPictures"
+    "Ryvie-rTransfer"
+    "Ryvie-rdrop"
+    "Ryvie"
+)
+
+
+# Demander la branche à cloner
+read -p "Quelle branche veux-tu cloner ? " BRANCH
+if [[ -z "$BRANCH" ]]; then
+    echo "❌ Branche invalide. Annulation."
+    exit 1
+fi
+
+# Fonction de vérification des identifiants
+verify_credentials() {
+    local user="$1"
+    local token="$2"
+    local status_code
+
+    status_code=$(curl -s -o /dev/null -w "%{http_code}" -u "$user:$token" https://api.github.com/user)
+    [[ "$status_code" == "200" ]]
+}
+
+# Demander les identifiants GitHub s'ils ne sont pas valides
+while true; do
+    if [[ -z "$GITHUB_USER" ]]; then
+        read -p "Entrez votre nom d'utilisateur GitHub : " GITHUB_USER
+    fi
+
+    if [[ -z "$GITHUB_TOKEN" ]]; then
+        read -s -p "Entrez votre token GitHub personnel : " GITHUB_TOKEN
+        echo
+    fi
+
+    if verify_credentials "$GITHUB_USER" "$GITHUB_TOKEN"; then
+        echo "✅ Authentification GitHub réussie."
+        break
+    else
+        echo "❌ Authentification échouée. Veuillez réessayer."
+        unset GITHUB_USER
+        unset GITHUB_TOKEN
+    fi
+done
+
+# Déterminer le répertoire de travail
+WORKDIR="$HOME/Bureau"
+[[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME/Desktop"
+[[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME"
+
+cd "$WORKDIR" || exit 1
+
+CREATED_DIRS=()
+
+log() {
+    echo -e "$1"
+}
+OWNER="maisonnavejul"
+# Clonage des dépôts
+for repo in "${REPOS[@]}"; do
+    if [[ ! -d "$repo" ]]; then
+        repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
+        log "📥 Clonage du dépôt $repo (branche $BRANCH)..."
+        git clone --branch "$BRANCH" "$repo_url" "$repo"
+        if [[ $? -eq 0 ]]; then
+            CREATED_DIRS+=("$WORKDIR/$repo")
+        else
+            log "❌ Échec du clonage du dépôt : $repo"
+        fi
+    else
+        log "✅ Dépôt déjà cloné: $repo"
+    fi
+done
+
 # Vérifier si npm est installé
 if command -v npm > /dev/null 2>&1; then
-    echo "npm est déjà installé : $(npm --version)"
+    echo "✅ npm est déjà installé : $(npm --version)"
 else
-    echo "npm n'est pas installé. Installation en cours..."
+    echo "⚙️ npm n'est pas installé. Installation en cours..."
     sudo apt update
     sudo apt install -y npm
-    # Vérification après installation
+
     if command -v npm > /dev/null 2>&1; then
-        echo "npm a été installé avec succès : $(npm --version)"
+        echo "✅ npm a été installé avec succès : $(npm --version)"
     else
-        echo "Erreur: L'installation de npm a échoué."
+        echo "❌ Erreur: L'installation de npm a échoué."
         exit 1
     fi
 fi
+
 
 echo ""
 echo "------------------------------------------"
@@ -187,6 +265,7 @@ else
         echo "Erreur lors de l'installation ou de la vérification de Docker."
     fi
 fi
+
 echo ""
  echo "--------------------------------------------------"
  echo "Etape 8: Ajout de l'utilisateur ($USER) au groupe docker "
@@ -206,7 +285,7 @@ echo ""
  echo "-----------------------------------------------------"
  echo "Etape 9: Ip du cloud Ryvie ryvie.local"
  echo "-----------------------------------------------------"
-sudo apt update && sudo apt install -y avahi-daemon avahi-utils && sudo systemctl enable --now avahi-daemon && sudo sed -i 's/^#\s*host-name=.*/host-name=ryvievmtest/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
+sudo apt update && sudo apt install -y avahi-daemon avahi-utils && sudo systemctl enable --now avahi-daemon && sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
  echo ""
 echo "Etape 10: Configuration d'OpenLDAP avec Docker Compose"
 echo "-----------------------------------------------------"
@@ -215,6 +294,7 @@ echo "-----------------------------------------------------"
 LDAP_DIR="$HOME/Bureau"
 [ ! -d "$LDAP_DIR" ] && LDAP_DIR="$HOME/Desktop"
 [ ! -d "$LDAP_DIR" ] && LDAP_DIR="$HOME"
+sudo docker network prune -f
 
 mkdir -p "$LDAP_DIR/ldap"
 cd "$LDAP_DIR/ldap"
@@ -407,6 +487,7 @@ WORKDIR="$HOME/Bureau"
 [ ! -d "$WORKDIR" ] && WORKDIR="$HOME/Desktop"
 [ ! -d "$WORKDIR" ] && WORKDIR="$HOME"
 
+
 echo "📁 Dossier sélectionné : $WORKDIR"
 cd "$WORKDIR"
 
@@ -493,8 +574,8 @@ else
 fi
 
 # 2. Se placer dans le dossier
-cd Ryvie-rTransfer
-
+cd "$WORKDIR/Ryvie-rTransfer"
+pwd
 # 3. Mise à jour de la section LDAP dans le fichier config.yaml
 echo "🛠️ Mise à jour de la configuration LDAP dans config.yaml..."
 sed -i '/^ldap:/,/^[^ ]/c\
@@ -526,31 +607,40 @@ echo "✅ rTransfer est lancé et prêt avec l’authentification LDAP."
 
 echo ""
 echo "-----------------------------------------------------"
+echo "-----------------------------------------------------"
 echo "Étape 13: Installation de Ryvie rDrop"
 echo "-----------------------------------------------------"
-echo "Clonage du dépôt Ryvie-rdrop..."
-git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
+
+cd "$WORKDIR"
+
+if [ -d "Ryvie-rdrop" ]; then
+    echo "✅ Le dépôt Ryvie-rdrop existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie-rdrop..."
+    git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt Ryvie-rdrop."
+        exit 1
+    fi
+fi
+
 cd Ryvie-rdrop/snapdrop-master/snapdrop-master
 
-echo "Rend le script openssl exécutable..."
-chmod +x docker/openssl/create.sh
+echo "✅ Répertoire atteint : $(pwd)"
 
-echo "Lancement des conteneurs avec Docker Compose..."
-docker compose up -d
-
-echo "Pour vous permettre d'accéder à votre serveur Ryvie depuis l'extérieur en toute sécurité,"
-echo "nous proposons d'installer et de configurer automatiquement un VPN sécurisé."
-echo "Cela permettra l'accès distant depuis votre PC et votre téléphone sans configuration complexe."
-echo ""
-read -p "Souhaitez-vous continuer ? (O/N) : " choix
-
-if [[ "$choix" == "O" || "$choix" == "o" ]]; then
-    curl -fsSL https://pkgs.netbird.io/install.sh | sh
-    netbird up --management-url https://jules.test.ryvie.fr --admin-url https://jules.test.ryvie.fr --setup-key DB1A3E54-0FC1-4A9E-BBCD-31C75A25866E
-    echo "VPN installé et configuré avec succès."
+if [ -f docker/openssl/create.sh ]; then
+    chmod +x docker/openssl/create.sh
+    echo "✅ Script create.sh rendu exécutable."
 else
-    echo "Installation du VPN annulée. Vous pourrez l'installer manuellement plus tard."
+    echo "❌ Script docker/openssl/create.sh introuvable."
+    exit 1
 fi
+
+echo "📦 Suppression des conteneurs orphelins et anciens réseaux..."
+sudo docker compose down --remove-orphans
+sudo docker network prune -f
+sudo docker compose up -d
+
 echo "-----------------------------------------------------"
 echo "Étape 14: Installation et lancement du Back-End"
 echo "-----------------------------------------------------"
@@ -582,9 +672,26 @@ git switch Back-End || { echo "Échec du passage à la branche Back-End"; exit 1
 
 # Aller dans le dossier du backend
 cd Ryvie-Back || { echo "Le dossier Ryvie-Back est introuvable"; exit 1; }
+cat <<EOF > .env
+PORT=3002
+JWT_SECRET=dQMsVQS39XkJRCHsAhJn3Hn2
 
+# Configuration LDAP
+LDAP_URL=ldap://localhost:389
+LDAP_BIND_DN=cn=read-only,ou=users,dc=example,dc=org
+LDAP_BIND_PASSWORD=readpassword
+LDAP_USER_SEARCH_BASE=ou=users,dc=example,dc=org
+LDAP_GROUP_SEARCH_BASE=ou=users,dc=example,dc=org
+LDAP_USER_FILTER=(objectClass=inetOrgPerson)
+LDAP_GROUP_FILTER=(objectClass=groupOfNames)
+LDAP_ADMIN_GROUP=cn=admins,ou=users,dc=example,dc=org
+LDAP_USER_GROUP=cn=users,ou=users,dc=example,dc=org
+LDAP_GUEST_GROUP=cn=guests,ou=users,dc=example,dc=org
+EOF
+
+echo "✅ Fichier .env créé."
 # Lancer le serveur Node.js
-node index.js
+sudo node index.js
 
 
 echo "Tout est prêt 🎉"
