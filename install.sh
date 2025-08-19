@@ -267,28 +267,93 @@ else
 fi
 
 echo ""
+echo "----------------------------------------------------"
+echo "Étape 8: Installation de Redis"
+echo "----------------------------------------------------"
+
+# Vérifier si Redis est déjà installé
+if command -v redis-server > /dev/null 2>&1; then
+    echo "Redis est déjà installé : $(redis-server --version)"
+else
+    echo "Installation de Redis (redis-server)..."
+    sudo apt update
+    sudo apt install -y redis-server
+
+    # Configurer Redis pour systemd si nécessaire
+    if [ -f /etc/redis/redis.conf ]; then
+        sudo sed -i 's/^supervised .*/supervised systemd/' /etc/redis/redis.conf
+    fi
+
+    # Activer et démarrer Redis
+    sudo systemctl enable --now redis-server
+fi
+
+# Vérifier l'état du service Redis
+if systemctl is-active --quiet redis-server; then
+    echo "Redis est en cours d'exécution."
+else
+    echo "Tentative de démarrage de Redis..."
+    sudo systemctl start redis-server || echo "⚠️ Impossible de démarrer Redis automatiquement."
+fi
+
+# Test simple avec redis-cli si disponible
+if command -v redis-cli > /dev/null 2>&1; then
+    RESP=$(redis-cli ping 2>/dev/null || true)
+    if [ "$RESP" = "PONG" ]; then
+        echo "✅ Test Redis OK (PONG)"
+    else
+        echo "⚠️ Test Redis échoué (redis-cli ping ne répond pas PONG)"
+    fi
+fi
+
+echo ""
  echo "--------------------------------------------------"
- echo "Etape 8: Ajout de l'utilisateur ($USER) au groupe docker "
+ echo "Etape 9: Ajout de l'utilisateur ($USER) au groupe docker "
  echo "--------------------------------------------------"
  echo ""
  
  # Vérifier si l'utilisateur est déjà dans le groupe docker
- if id -nG "$USER" | grep -qw "docker"; then
-     echo "L'utilisateur $USER est déjà membre du groupe docker."
+  if id -nG "$USER" | grep -qw "docker"; then
+      echo "L'utilisateur $USER est déjà membre du groupe docker."
  else
      # Ajouter l'utilisateur actuel au groupe docker et appliquer la modification
      sudo usermod -aG docker $USER
      echo "L'utilisateur $USER a été ajouté au groupe docker."
      echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
- fi
- 
+ fi 
+  echo "-----------------------------------------------------"
+  echo "Etape 10: Installation et démarrage de Portainer"
+  echo "-----------------------------------------------------"
+  
+  # Créer le volume Portainer s'il n'existe pas
+  if ! sudo docker volume ls -q | grep -q '^portainer_data$'; then
+    sudo docker volume create portainer_data
+  fi
+  
+  # Lancer Portainer uniquement s'il n'existe pas déjà
+  if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^portainer$'; then
+    sudo docker run -d \
+      --name portainer \
+      --restart=always \
+      -p 8000:8000 \
+      -p 9443:9443 \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v portainer_data:/data \
+      portainer/portainer-ce:latest
+  else
+    echo "Portainer existe déjà. Vérification de l'état..."
+    if ! sudo docker ps --format '{{.Names}}' | grep -q '^portainer$'; then
+      sudo docker start portainer
+    fi
+  fi
+  
+  echo "-----------------------------------------------------"
+  echo "Etape 11: Ip du cloud Ryvie ryvie.local"
+  echo "-----------------------------------------------------"
+ sudo apt update && sudo apt install -y avahi-daemon avahi-utils && sudo systemctl enable --now avahi-daemon && sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
+  echo ""
+ echo "Etape 12: Configuration d'OpenLDAP avec Docker Compose"
  echo "-----------------------------------------------------"
- echo "Etape 9: Ip du cloud Ryvie ryvie.local"
- echo "-----------------------------------------------------"
-sudo apt update && sudo apt install -y avahi-daemon avahi-utils && sudo systemctl enable --now avahi-daemon && sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
- echo ""
-echo "Etape 10: Configuration d'OpenLDAP avec Docker Compose"
-echo "-----------------------------------------------------"
 
 # 1. Créer le dossier ldap sur le Bureau ou Desktop et s'y positionner
 LDAP_DIR="$HOME/Bureau"
@@ -307,7 +372,6 @@ services:
   openldap:
     image: bitnami/openldap:latest
     container_name: openldap
-    restart: unless-stopped
     environment:
       - LDAP_ADMIN_USERNAME=admin           # Nom d'utilisateur admin LDAP
       - LDAP_ADMIN_PASSWORD=adminpassword   # Mot de passe admin
@@ -319,6 +383,7 @@ services:
       my_custom_network:
     volumes:
       - openldap_data:/bitnami/openldap
+    restart: unless-stopped
 
 volumes:
   openldap_data:
@@ -641,60 +706,49 @@ sudo docker compose down --remove-orphans
 sudo docker network prune -f
 sudo docker compose up -d
 
+
+
 echo "-----------------------------------------------------"
-echo "Étape 14: Installation et lancement du Back-End"
+echo "Étape 14: Installation et lancement du Back-end-view"
 echo "-----------------------------------------------------"
 
-WORKDIR="$HOME/Bureau"
-[ ! -d "$WORKDIR" ] && WORKDIR="$HOME/Desktop"
-[ ! -d "$WORKDIR" ] && WORKDIR="$HOME"
+# S'assurer d'être dans le répertoire de travail
+cd "$WORKDIR" || { echo "❌ WORKDIR introuvable: $WORKDIR"; exit 1; }
 
-echo "📁 Dossier sélectionné : $WORKDIR"
-cd "$WORKDIR"
-
-# 2. Cloner le dépôt si pas déjà présent
-if [ -d "Ryvie" ]; then
-    echo "✅ Le dépôt Ryvie-rPictures existe déjà."
-else
-    echo "📥 Clonage du dépôt Ryvie Backend"
-    git clone https://github.com/maisonnavejul/Ryvie.git
-    if [ $? -ne 0 ]; then
-        echo "❌ Échec du clonage du dépôt. Arrêt du script."
-        exit 1
-    fi
+# Vérifier la présence du dépôt Ryvie
+if [ ! -d "Ryvie" ]; then
+    echo "❌ Le dépôt 'Ryvie' est introuvable dans $WORKDIR. Assurez-vous qu'il a été cloné plus haut."
+    exit 1
 fi
 
-# Aller dans le dossier cloné
-cd Ryvie || { echo "Le dossier Ryvie est introuvable"; exit 1; }
+# Aller dans le dossier Back-end-view
+cd "Ryvie/Back-end-view" || { echo "❌ Dossier 'Ryvie/Back-end-view' introuvable"; exit 1; }
 
-# Passer sur la branche Back-End
-git switch Back-End || { echo "Échec du passage à la branche Back-End"; exit 1; }
+# Copier le fichier .env depuis Desktop (fallback Bureau)
+SRC_ENV="$HOME/Desktop/.env"
+if [ ! -f "$SRC_ENV" ]; then
+  ALT_ENV="$HOME/Bureau/.env"
+  if [ -f "$ALT_ENV" ]; then
+    SRC_ENV="$ALT_ENV"
+  fi
+fi
 
-# Aller dans le dossier du backend
-cd Ryvie-Back || { echo "Le dossier Ryvie-Back est introuvable"; exit 1; }
-cat <<EOF > .env
-PORT=3002
-JWT_SECRET=dQMsVQS39XkJRCHsAhJn3Hn2
+if [ -f "$SRC_ENV" ]; then
+  echo "📄 Copie de $SRC_ENV vers $(pwd)/.env"
+  cp "$SRC_ENV" .env
+else
+  echo "⚠️ Aucun .env trouvé sur Desktop ou Bureau. Étape de copie ignorée."
+fi
 
-# Configuration LDAP
-LDAP_URL=ldap://localhost:389
-LDAP_BIND_DN=cn=read-only,ou=users,dc=example,dc=org
-LDAP_BIND_PASSWORD=readpassword
-LDAP_USER_SEARCH_BASE=ou=users,dc=example,dc=org
-LDAP_GROUP_SEARCH_BASE=ou=users,dc=example,dc=org
-LDAP_USER_FILTER=(objectClass=inetOrgPerson)
-LDAP_GROUP_FILTER=(objectClass=groupOfNames)
-LDAP_ADMIN_GROUP=cn=admins,ou=users,dc=example,dc=org
-LDAP_USER_GROUP=cn=users,ou=users,dc=example,dc=org
-LDAP_GUEST_GROUP=cn=guests,ou=users,dc=example,dc=org
-EOF
+# Installer les dépendances et lancer l'application
+echo "📦 Installation des dépendances (npm install)"
+npm install || { echo "❌ npm install a échoué"; exit 1; }
 
-echo "✅ Fichier .env créé."
-# Lancer le serveur Node.js
-sudo node index.js
-
-
-echo "Tout est prêt 🎉"
+echo "🚀 Lancement de Back-end-view (node index.js) au premier plan"
+echo "ℹ️ Les logs s'affichent ci-dessous. Appuyez sur Ctrl+C pour arrêter."
+mkdir -p logs
+# Afficher les logs en direct ET les sauvegarder dans un fichier
+node index.js 2>&1 | tee -a logs/backend-view.out
 
 
 newgrp docker
