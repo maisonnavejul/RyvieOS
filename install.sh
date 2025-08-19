@@ -316,7 +316,6 @@ services:
       - "636:1636"  # Port LDAP sécurisé
     networks:
       my_custom_network:
-        ipv4_address: 172.20.0.2
     volumes:
       - openldap_data:/bitnami/openldap
 
