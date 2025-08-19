@@ -307,6 +307,7 @@ services:
   openldap:
     image: bitnami/openldap:latest
     container_name: openldap
+    restart: unless-stopped
     environment:
       - LDAP_ADMIN_USERNAME=admin           # Nom d'utilisateur admin LDAP
       - LDAP_ADMIN_PASSWORD=adminpassword   # Mot de passe admin
