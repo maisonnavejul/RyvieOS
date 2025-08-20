@@ -79,6 +79,7 @@ REPOS=(
     "Ryvie-rPictures"
     "Ryvie-rTransfer"
     "Ryvie-rdrop"
+    "Ryvie-rDrive"
     "Ryvie"
 )
 
@@ -625,43 +626,28 @@ echo "-----------------------------------------------------"
 echo "Étape 12: Installation de Ryvie rTransfer et synchronisation LDAP"
 echo "-----------------------------------------------------"
 
+# Aller dans le dossier Desktop (ou Bureau en fallback)
+BASE_DIR="$HOME/Desktop"
+[ ! -d "$BASE_DIR" ] && BASE_DIR="$HOME/Bureau"
+cd "$BASE_DIR" || { echo "❌ Impossible d'accéder à $BASE_DIR"; exit 1; }
+
 # 1. Cloner le dépôt si pas déjà présent
-cd "$WORKDIR"
 if [ -d "Ryvie-rTransfer" ]; then
     echo "✅ Le dépôt Ryvie-rTransfer existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rTransfer..."
-    git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git
-    if [ $? -ne 0 ]; then
-        echo "❌ Échec du clonage du dépôt. Arrêt du script."
-        exit 1
-    fi
+    git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git || { echo "❌ Échec du clonage"; exit 1; }
 fi
 
-# 2. Se placer dans le dossier
-cd "$WORKDIR/Ryvie-rTransfer"
+# 2. Se placer dans le dossier Ryvie-rTransfer
+cd "Ryvie-rTransfer" || { echo "❌ Impossible d'accéder à Ryvie-rTransfer"; exit 1; }
 pwd
-# 3. Mise à jour de la section LDAP dans le fichier config.yaml
-echo "🛠️ Mise à jour de la configuration LDAP dans config.yaml..."
-sed -i '/^ldap:/,/^[^ ]/c\
-ldap:\n\
-  enabled: "true"\n\
-  url: ldap://172.20.0.1:389\n\
-  bindDn: cn=admin,dc=example,dc=org\n\
-  bindPassword: adminpassword\n\
-  searchBase: ou=users,dc=example,dc=org\n\
-  searchQuery: (uid=%username%)\n\
-  adminGroups: admins\n\
-  fieldNameMemberOf: employeeType\n\
-  fieldNameEmail: mail' config.yaml
 
-echo "✅ Bloc LDAP modifié avec succès."
-
-# 4. Lancer rTransfer avec le fichier docker-compose.local.yml
+# 3. Lancer rTransfer avec docker-compose.local.yml
 echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.local.yml..."
 sudo docker compose -f docker-compose.local.yml up -d
 
-# 5. Vérification du démarrage sur le port 3000
+# 4. Vérification du démarrage sur le port 3000
 echo "⏳ Attente du démarrage de rTransfer (port 3000)..."
 until curl -s http://localhost:3000 > /dev/null; do
     sleep 2
@@ -669,6 +655,7 @@ until curl -s http://localhost:3000 > /dev/null; do
 done
 echo ""
 echo "✅ rTransfer est lancé et prêt avec l’authentification LDAP."
+
 
 echo ""
 echo "-----------------------------------------------------"
@@ -707,9 +694,84 @@ sudo docker network prune -f
 sudo docker compose up -d
 
 
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 14: Installation et lancement de Ryvie rDrive"
+echo "-----------------------------------------------------"
+
+RDRIVE_DIR="$WORKDIR/Ryvie-rDrive/tdrive"
+
+if [ ! -d "$RDRIVE_DIR" ]; then
+    echo "❌ Le dossier $RDRIVE_DIR est introuvable. Vérifie que le dépôt est bien cloné."
+    exit 1
+fi
+
+cd "$RDRIVE_DIR"
+
+# Fonction utilitaire pour attendre un conteneur Docker
+wait_cid() {
+  local cid="$1"
+  local name state health
+  name="$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##')"
+  echo "⏳ Attente du conteneur $name ..."
+  while :; do
+    state="$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo 'unknown')"
+    health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || true)"
+    if [[ "$state" == "running" && ( -z "$health" || "$health" == "healthy" ) ]]; then
+      echo "✅ $name prêt."
+      break
+    fi
+    sleep 2
+    echo "   …"
+  done
+}
+
+# 1. Lancer OnlyOffice
+echo "🔹 Démarrage de OnlyOffice..."
+docker compose \
+  -f docker-compose.dev.onlyoffice.yml \
+  -f docker-compose.onlyoffice-connector-override.yml \
+  up -d
+
+# 1b. Attendre que tous les conteneurs OnlyOffice soient prêts
+OO_CIDS=$(docker compose \
+  -f docker-compose.dev.onlyoffice.yml \
+  -f docker-compose.onlyoffice-connector-override.yml \
+  ps -q)
+
+if [ -z "$OO_CIDS" ]; then
+  echo "❌ Aucun conteneur détecté pour la stack OnlyOffice."
+  exit 1
+fi
+
+for cid in $OO_CIDS; do
+  wait_cid "$cid"
+done
+
+# 2. Build et démarrage du service node
+echo "🔹 Build du service node..."
+docker compose -f docker-compose.minimal.yml build node
+
+echo "🔹 Démarrage du service node..."
+docker compose -f docker-compose.minimal.yml up -d node
+
+# 2b. Attendre que node soit prêt
+NODE_CID=$(docker compose -f docker-compose.minimal.yml ps -q node)
+wait_cid "$NODE_CID"
+
+# 3. Lancer frontend
+echo "🔹 Démarrage du service frontend..."
+docker compose -f docker-compose.minimal.yml up -d frontend
+
+# 4. Démarrer le reste du minimal
+echo "🔹 Démarrage du reste des services (mongo, etc.)..."
+docker compose -f docker-compose.minimal.yml up -d
+
+echo "✅ rDrive est lancé."
+
 
 echo "-----------------------------------------------------"
-echo "Étape 14: Installation et lancement du Back-end-view"
+echo "Étape 15: Installation et lancement du Back-end-view"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
