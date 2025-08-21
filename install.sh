@@ -49,6 +49,28 @@ if [ "$OS" != "Linux" ]; then
 fi
 echo "Système d'exploitation: $OS"
 
+# 2b. Installation de git et curl au début du script si absents
+echo ""
+echo "------------------------------------------"
+echo " Vérification et installation de git et curl "
+echo "------------------------------------------"
+
+# Vérifier et installer git si nécessaire
+if command -v git > /dev/null 2>&1; then
+    echo "✅ git est déjà installé : $(git --version)"
+else
+    echo "⚙️ Installation de git..."
+    sudo apt update && sudo apt install -y git || { echo "❌ Échec de l'installation de git"; exit 1; }
+fi
+
+# Vérifier et installer curl si nécessaire
+if command -v curl > /dev/null 2>&1; then
+    echo "✅ curl est déjà installé : $(curl --version | head -n1)"
+else
+    echo "⚙️ Installation de curl..."
+    sudo apt update && sudo apt install -y curl || { echo "❌ Échec de l'installation de curl"; exit 1; }
+fi
+
 # 3. Vérification de la mémoire physique (minimum 400 MB)
 MEMORY=$(free -m | awk '/Mem:/ {print $2}')
 MIN_MEMORY=400
