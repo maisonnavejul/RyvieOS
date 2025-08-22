@@ -721,14 +721,27 @@ echo "-----------------------------------------------------"
 echo "Étape 14: Installation et lancement de Ryvie rDrive"
 echo "-----------------------------------------------------"
 
-RDRIVE_DIR="$WORKDIR/Ryvie-rDrive/tdrive"
+# Sécurités
+set -euo pipefail
 
-if [ ! -d "$RDRIVE_DIR" ]; then
-    echo "❌ Le dossier $RDRIVE_DIR est introuvable. Vérifie que le dépôt est bien cloné."
-    exit 1
+# Dossier du script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Déduction robuste du chemin de tdrive
+if [ -d "$SCRIPT_DIR/Ryvie-rDrive/tdrive" ]; then
+  RDRIVE_DIR="$SCRIPT_DIR/Ryvie-rDrive/tdrive"
+elif [ -d "$SCRIPT_DIR/tdrive" ]; then
+  # cas où le script est lancé depuis le repo Ryvie-rDrive
+  RDRIVE_DIR="$SCRIPT_DIR/tdrive"
+elif [ -n "${WORKDIR:-}" ] && [ -d "$WORKDIR/Ryvie-rDrive/tdrive" ]; then
+  RDRIVE_DIR="$WORKDIR/Ryvie-rDrive/tdrive"
+else
+  echo "❌ Impossible de trouver le dossier 'tdrive' (cherché depuis $SCRIPT_DIR et \$WORKDIR)."
+  exit 1
 fi
 
 cd "$RDRIVE_DIR"
+
 
 # Fonction utilitaire pour attendre un conteneur Docker
 wait_cid() {
