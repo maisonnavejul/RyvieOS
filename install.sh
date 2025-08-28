@@ -715,10 +715,27 @@ sudo docker compose down --remove-orphans
 sudo docker network prune -f
 sudo docker compose up -d
 
-
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 14: Installation et lancement de Ryvie rDrive"
+echo "Étape 14: Préparation de Rclone"
+echo "-----------------------------------------------------"
+
+# Création du dossier de conf si besoin
+sudo mkdir -p /root/.config/rclone
+
+# Création du fichier de conf vide s'il n'existe pas
+sudo touch /root/.config/rclone/rclone.conf
+
+# Permissions strictes
+sudo chown -R root:root /root/.config/rclone
+sudo chmod 700 /root/.config/rclone
+sudo chmod 600 /root/.config/rclone/rclone.conf
+
+# Vérification du chemin de config
+sudo rclone config file
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 15: Installation et lancement de Ryvie rDrive"
 echo "-----------------------------------------------------"
 
 # Sécurités
@@ -806,7 +823,7 @@ echo "✅ rDrive est lancé."
 
 
 echo "-----------------------------------------------------"
-echo "Étape 15: Installation et lancement du Back-end-view"
+echo "Étape 16: Installation et lancement du Back-end-view"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
