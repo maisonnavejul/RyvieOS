@@ -49,6 +49,28 @@ if [ "$OS" != "Linux" ]; then
 fi
 echo "Système d'exploitation: $OS"
 
+# 2b. Installation de git et curl au début du script si absents
+echo ""
+echo "------------------------------------------"
+echo " Vérification et installation de git et curl "
+echo "------------------------------------------"
+
+# Vérifier et installer git si nécessaire
+if command -v git > /dev/null 2>&1; then
+    echo "✅ git est déjà installé : $(git --version)"
+else
+    echo "⚙️ Installation de git..."
+    sudo apt update && sudo apt install -y git || { echo "❌ Échec de l'installation de git"; exit 1; }
+fi
+
+# Vérifier et installer curl si nécessaire
+if command -v curl > /dev/null 2>&1; then
+    echo "✅ curl est déjà installé : $(curl --version | head -n1)"
+else
+    echo "⚙️ Installation de curl..."
+    sudo apt update && sudo apt install -y curl || { echo "❌ Échec de l'installation de curl"; exit 1; }
+fi
+
 # 3. Vérification de la mémoire physique (minimum 400 MB)
 MEMORY=$(free -m | awk '/Mem:/ {print $2}')
 MIN_MEMORY=400
@@ -73,21 +95,100 @@ echo " Vérification et installation de npm "
 echo "------------------------------------------"
 echo ""
 
+
+# Dépôts sur lesquels tu es invité
+REPOS=(
+    "Ryvie-rPictures"
+    "Ryvie-rTransfer"
+    "Ryvie-rdrop"
+    "Ryvie-rDrive"
+    "Ryvie"
+)
+
+
+# Demander la branche à cloner
+read -p "Quelle branche veux-tu cloner ? " BRANCH
+if [[ -z "$BRANCH" ]]; then
+    echo "❌ Branche invalide. Annulation."
+    exit 1
+fi
+
+# Fonction de vérification des identifiants
+verify_credentials() {
+    local user="$1"
+    local token="$2"
+    local status_code
+
+    status_code=$(curl -s -o /dev/null -w "%{http_code}" -u "$user:$token" https://api.github.com/user)
+    [[ "$status_code" == "200" ]]
+}
+
+# Demander les identifiants GitHub s'ils ne sont pas valides
+while true; do
+    if [[ -z "$GITHUB_USER" ]]; then
+        read -p "Entrez votre nom d'utilisateur GitHub : " GITHUB_USER
+    fi
+
+    if [[ -z "$GITHUB_TOKEN" ]]; then
+        read -s -p "Entrez votre token GitHub personnel : " GITHUB_TOKEN
+        echo
+    fi
+
+    if verify_credentials "$GITHUB_USER" "$GITHUB_TOKEN"; then
+        echo "✅ Authentification GitHub réussie."
+        break
+    else
+        echo "❌ Authentification échouée. Veuillez réessayer."
+        unset GITHUB_USER
+        unset GITHUB_TOKEN
+    fi
+done
+
+# Déterminer le répertoire de travail
+WORKDIR="$HOME/Bureau"
+[[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME/Desktop"
+[[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME"
+
+cd "$WORKDIR" || exit 1
+
+CREATED_DIRS=()
+
+log() {
+    echo -e "$1"
+}
+OWNER="maisonnavejul"
+# Clonage des dépôts
+for repo in "${REPOS[@]}"; do
+    if [[ ! -d "$repo" ]]; then
+        repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
+        log "📥 Clonage du dépôt $repo (branche $BRANCH)..."
+        git clone --branch "$BRANCH" "$repo_url" "$repo"
+        if [[ $? -eq 0 ]]; then
+            CREATED_DIRS+=("$WORKDIR/$repo")
+        else
+            log "❌ Échec du clonage du dépôt : $repo"
+        fi
+    else
+        log "✅ Dépôt déjà cloné: $repo"
+    fi
+done
+
 # Vérifier si npm est installé
 if command -v npm > /dev/null 2>&1; then
-    echo "npm est déjà installé : $(npm --version)"
+    echo "✅ npm est déjà installé : $(npm --version)"
 else
-    echo "npm n'est pas installé. Installation en cours..."
+    echo "⚙️ npm n'est pas installé. Installation en cours..."
     sudo apt update
     sudo apt install -y npm
-    # Vérification après installation
+
     if command -v npm > /dev/null 2>&1; then
-        echo "npm a été installé avec succès : $(npm --version)"
+        echo "✅ npm a été installé avec succès : $(npm --version)"
     else
-        echo "Erreur: L'installation de npm a échoué."
+        echo "❌ Erreur: L'installation de npm a échoué."
         exit 1
     fi
 fi
+
 
 echo ""
 echo "------------------------------------------"
@@ -187,34 +288,101 @@ else
         echo "Erreur lors de l'installation ou de la vérification de Docker."
     fi
 fi
+
+echo ""
+echo "----------------------------------------------------"
+echo "Étape 8: Installation de Redis"
+echo "----------------------------------------------------"
+
+# Vérifier si Redis est déjà installé
+if command -v redis-server > /dev/null 2>&1; then
+    echo "Redis est déjà installé : $(redis-server --version)"
+else
+    echo "Installation de Redis (redis-server)..."
+    sudo apt update
+    sudo apt install -y redis-server
+
+    # Configurer Redis pour systemd si nécessaire
+    if [ -f /etc/redis/redis.conf ]; then
+        sudo sed -i 's/^supervised .*/supervised systemd/' /etc/redis/redis.conf
+    fi
+
+    # Activer et démarrer Redis
+    sudo systemctl enable --now redis-server
+fi
+
+# Vérifier l'état du service Redis
+if systemctl is-active --quiet redis-server; then
+    echo "Redis est en cours d'exécution."
+else
+    echo "Tentative de démarrage de Redis..."
+    sudo systemctl start redis-server || echo "⚠️ Impossible de démarrer Redis automatiquement."
+fi
+
+# Test simple avec redis-cli si disponible
+if command -v redis-cli > /dev/null 2>&1; then
+    RESP=$(redis-cli ping 2>/dev/null || true)
+    if [ "$RESP" = "PONG" ]; then
+        echo "✅ Test Redis OK (PONG)"
+    else
+        echo "⚠️ Test Redis échoué (redis-cli ping ne répond pas PONG)"
+    fi
+fi
+
 echo ""
  echo "--------------------------------------------------"
- echo "Etape 8: Ajout de l'utilisateur ($USER) au groupe docker "
+ echo "Etape 9: Ajout de l'utilisateur ($USER) au groupe docker "
  echo "--------------------------------------------------"
  echo ""
  
  # Vérifier si l'utilisateur est déjà dans le groupe docker
- if id -nG "$USER" | grep -qw "docker"; then
-     echo "L'utilisateur $USER est déjà membre du groupe docker."
+  if id -nG "$USER" | grep -qw "docker"; then
+      echo "L'utilisateur $USER est déjà membre du groupe docker."
  else
      # Ajouter l'utilisateur actuel au groupe docker et appliquer la modification
      sudo usermod -aG docker $USER
      echo "L'utilisateur $USER a été ajouté au groupe docker."
      echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
- fi
- 
+ fi 
+  echo "-----------------------------------------------------"
+  echo "Etape 10: Installation et démarrage de Portainer"
+  echo "-----------------------------------------------------"
+  
+  # Créer le volume Portainer s'il n'existe pas
+  if ! sudo docker volume ls -q | grep -q '^portainer_data$'; then
+    sudo docker volume create portainer_data
+  fi
+  
+  # Lancer Portainer uniquement s'il n'existe pas déjà
+  if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^portainer$'; then
+    sudo docker run -d \
+      --name portainer \
+      --restart=always \
+      -p 8000:8000 \
+      -p 9443:9443 \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v portainer_data:/data \
+      portainer/portainer-ce:latest
+  else
+    echo "Portainer existe déjà. Vérification de l'état..."
+    if ! sudo docker ps --format '{{.Names}}' | grep -q '^portainer$'; then
+      sudo docker start portainer
+    fi
+  fi
+  
+  echo "-----------------------------------------------------"
+  echo "Etape 11: Ip du cloud Ryvie ryvie.local"
+  echo "-----------------------------------------------------"
+ sudo apt update && sudo apt install -y avahi-daemon avahi-utils && sudo systemctl enable --now avahi-daemon && sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
+  echo ""
+ echo "Etape 12: Configuration d'OpenLDAP avec Docker Compose"
  echo "-----------------------------------------------------"
- echo "Etape 9: Ip du cloud Ryvie ryvie.local"
- echo "-----------------------------------------------------"
-sudo apt update && sudo apt install -y avahi-daemon avahi-utils && sudo systemctl enable --now avahi-daemon && sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
- echo ""
-echo "Etape 10: Configuration d'OpenLDAP avec Docker Compose"
-echo "-----------------------------------------------------"
 
 # 1. Créer le dossier ldap sur le Bureau ou Desktop et s'y positionner
 LDAP_DIR="$HOME/Bureau"
 [ ! -d "$LDAP_DIR" ] && LDAP_DIR="$HOME/Desktop"
 [ ! -d "$LDAP_DIR" ] && LDAP_DIR="$HOME"
+sudo docker network prune -f
 
 mkdir -p "$LDAP_DIR/ldap"
 cd "$LDAP_DIR/ldap"
@@ -236,9 +404,9 @@ services:
       - "636:1636"  # Port LDAP sécurisé
     networks:
       my_custom_network:
-        ipv4_address: 172.20.0.2
     volumes:
       - openldap_data:/bitnami/openldap
+    restart: unless-stopped
 
 volumes:
   openldap_data:
@@ -407,6 +575,7 @@ WORKDIR="$HOME/Bureau"
 [ ! -d "$WORKDIR" ] && WORKDIR="$HOME/Desktop"
 [ ! -d "$WORKDIR" ] && WORKDIR="$HOME"
 
+
 echo "📁 Dossier sélectionné : $WORKDIR"
 cd "$WORKDIR"
 
@@ -479,43 +648,28 @@ echo "-----------------------------------------------------"
 echo "Étape 12: Installation de Ryvie rTransfer et synchronisation LDAP"
 echo "-----------------------------------------------------"
 
+# Aller dans le dossier Desktop (ou Bureau en fallback)
+BASE_DIR="$HOME/Desktop"
+[ ! -d "$BASE_DIR" ] && BASE_DIR="$HOME/Bureau"
+cd "$BASE_DIR" || { echo "❌ Impossible d'accéder à $BASE_DIR"; exit 1; }
+
 # 1. Cloner le dépôt si pas déjà présent
-cd "$WORKDIR"
 if [ -d "Ryvie-rTransfer" ]; then
     echo "✅ Le dépôt Ryvie-rTransfer existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rTransfer..."
-    git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git
-    if [ $? -ne 0 ]; then
-        echo "❌ Échec du clonage du dépôt. Arrêt du script."
-        exit 1
-    fi
+    git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git || { echo "❌ Échec du clonage"; exit 1; }
 fi
 
-# 2. Se placer dans le dossier
-cd Ryvie-rTransfer
+# 2. Se placer dans le dossier Ryvie-rTransfer
+cd "Ryvie-rTransfer" || { echo "❌ Impossible d'accéder à Ryvie-rTransfer"; exit 1; }
+pwd
 
-# 3. Mise à jour de la section LDAP dans le fichier config.yaml
-echo "🛠️ Mise à jour de la configuration LDAP dans config.yaml..."
-sed -i '/^ldap:/,/^[^ ]/c\
-ldap:\n\
-  enabled: "true"\n\
-  url: ldap://172.20.0.1:389\n\
-  bindDn: cn=admin,dc=example,dc=org\n\
-  bindPassword: adminpassword\n\
-  searchBase: ou=users,dc=example,dc=org\n\
-  searchQuery: (uid=%username%)\n\
-  adminGroups: admins\n\
-  fieldNameMemberOf: employeeType\n\
-  fieldNameEmail: mail' config.yaml
-
-echo "✅ Bloc LDAP modifié avec succès."
-
-# 4. Lancer rTransfer avec le fichier docker-compose.local.yml
+# 3. Lancer rTransfer avec docker-compose.local.yml
 echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.local.yml..."
 sudo docker compose -f docker-compose.local.yml up -d
 
-# 5. Vérification du démarrage sur le port 3000
+# 4. Vérification du démarrage sur le port 3000
 echo "⏳ Attente du démarrage de rTransfer (port 3000)..."
 until curl -s http://localhost:3000 > /dev/null; do
     sleep 2
@@ -524,70 +678,174 @@ done
 echo ""
 echo "✅ rTransfer est lancé et prêt avec l’authentification LDAP."
 
+
 echo ""
+echo "-----------------------------------------------------"
 echo "-----------------------------------------------------"
 echo "Étape 13: Installation de Ryvie rDrop"
 echo "-----------------------------------------------------"
-echo "Clonage du dépôt Ryvie-rdrop..."
-git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
-cd Ryvie-rdrop/snapdrop-master/snapdrop-master
 
-echo "Rend le script openssl exécutable..."
-chmod +x docker/openssl/create.sh
-
-echo "Lancement des conteneurs avec Docker Compose..."
-docker compose up -d
-
-echo "Pour vous permettre d'accéder à votre serveur Ryvie depuis l'extérieur en toute sécurité,"
-echo "nous proposons d'installer et de configurer automatiquement un VPN sécurisé."
-echo "Cela permettra l'accès distant depuis votre PC et votre téléphone sans configuration complexe."
-echo ""
-read -p "Souhaitez-vous continuer ? (O/N) : " choix
-
-if [[ "$choix" == "O" || "$choix" == "o" ]]; then
-    curl -fsSL https://pkgs.netbird.io/install.sh | sh
-    netbird up --management-url https://jules.test.ryvie.fr --admin-url https://jules.test.ryvie.fr --setup-key DB1A3E54-0FC1-4A9E-BBCD-31C75A25866E
-    echo "VPN installé et configuré avec succès."
-else
-    echo "Installation du VPN annulée. Vous pourrez l'installer manuellement plus tard."
-fi
-echo "-----------------------------------------------------"
-echo "Étape 14: Installation et lancement du Back-End"
-echo "-----------------------------------------------------"
-
-WORKDIR="$HOME/Bureau"
-[ ! -d "$WORKDIR" ] && WORKDIR="$HOME/Desktop"
-[ ! -d "$WORKDIR" ] && WORKDIR="$HOME"
-
-echo "📁 Dossier sélectionné : $WORKDIR"
 cd "$WORKDIR"
 
-# 2. Cloner le dépôt si pas déjà présent
-if [ -d "Ryvie" ]; then
-    echo "✅ Le dépôt Ryvie-rPictures existe déjà."
+if [ -d "Ryvie-rdrop" ]; then
+    echo "✅ Le dépôt Ryvie-rdrop existe déjà."
 else
-    echo "📥 Clonage du dépôt Ryvie Backend"
-    git clone https://github.com/maisonnavejul/Ryvie.git
+    echo "📥 Clonage du dépôt Ryvie-rdrop..."
+    git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
     if [ $? -ne 0 ]; then
-        echo "❌ Échec du clonage du dépôt. Arrêt du script."
+        echo "❌ Échec du clonage du dépôt Ryvie-rdrop."
         exit 1
     fi
 fi
 
-# Aller dans le dossier cloné
-cd Ryvie || { echo "Le dossier Ryvie est introuvable"; exit 1; }
+cd Ryvie-rdrop/snapdrop-master/snapdrop-master
 
-# Passer sur la branche Back-End
-git switch Back-End || { echo "Échec du passage à la branche Back-End"; exit 1; }
+echo "✅ Répertoire atteint : $(pwd)"
 
-# Aller dans le dossier du backend
-cd Ryvie-Back || { echo "Le dossier Ryvie-Back est introuvable"; exit 1; }
+if [ -f docker/openssl/create.sh ]; then
+    chmod +x docker/openssl/create.sh
+    echo "✅ Script create.sh rendu exécutable."
+else
+    echo "❌ Script docker/openssl/create.sh introuvable."
+    exit 1
+fi
 
-# Lancer le serveur Node.js
-node index.js
+echo "📦 Suppression des conteneurs orphelins et anciens réseaux..."
+sudo docker compose down --remove-orphans
+sudo docker network prune -f
+sudo docker compose up -d
 
 
-echo "Tout est prêt 🎉"
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 14: Installation et lancement de Ryvie rDrive"
+echo "-----------------------------------------------------"
+
+# Sécurités
+set -euo pipefail
+
+# Dossier du script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Déduction robuste du chemin de tdrive
+if [ -d "$SCRIPT_DIR/Ryvie-rDrive/tdrive" ]; then
+  RDRIVE_DIR="$SCRIPT_DIR/Ryvie-rDrive/tdrive"
+elif [ -d "$SCRIPT_DIR/tdrive" ]; then
+  # cas où le script est lancé depuis le repo Ryvie-rDrive
+  RDRIVE_DIR="$SCRIPT_DIR/tdrive"
+elif [ -n "${WORKDIR:-}" ] && [ -d "$WORKDIR/Ryvie-rDrive/tdrive" ]; then
+  RDRIVE_DIR="$WORKDIR/Ryvie-rDrive/tdrive"
+else
+  echo "❌ Impossible de trouver le dossier 'tdrive' (cherché depuis $SCRIPT_DIR et \$WORKDIR)."
+  exit 1
+fi
+
+cd "$RDRIVE_DIR"
+
+
+# Fonction utilitaire pour attendre un conteneur Docker
+wait_cid() {
+  local cid="$1"
+  local name state health
+  name="$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##')"
+  echo "⏳ Attente du conteneur $name ..."
+  while :; do
+    state="$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo 'unknown')"
+    health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || true)"
+    if [[ "$state" == "running" && ( -z "$health" || "$health" == "healthy" ) ]]; then
+      echo "✅ $name prêt."
+      break
+    fi
+    sleep 2
+    echo "   …"
+  done
+}
+
+# 1. Lancer OnlyOffice
+echo "🔹 Démarrage de OnlyOffice..."
+docker compose \
+  -f docker-compose.dev.onlyoffice.yml \
+  -f docker-compose.onlyoffice-connector-override.yml \
+  up -d
+
+# 1b. Attendre que tous les conteneurs OnlyOffice soient prêts
+OO_CIDS=$(docker compose \
+  -f docker-compose.dev.onlyoffice.yml \
+  -f docker-compose.onlyoffice-connector-override.yml \
+  ps -q)
+
+if [ -z "$OO_CIDS" ]; then
+  echo "❌ Aucun conteneur détecté pour la stack OnlyOffice."
+  exit 1
+fi
+
+for cid in $OO_CIDS; do
+  wait_cid "$cid"
+done
+
+# 2. Build et démarrage du service node
+echo "🔹 Build du service node..."
+docker compose -f docker-compose.minimal.yml build node
+
+echo "🔹 Démarrage du service node..."
+docker compose -f docker-compose.minimal.yml up -d node
+
+# 2b. Attendre que node soit prêt
+NODE_CID=$(docker compose -f docker-compose.minimal.yml ps -q node)
+wait_cid "$NODE_CID"
+
+# 3. Lancer frontend
+echo "🔹 Démarrage du service frontend..."
+docker compose -f docker-compose.minimal.yml up -d frontend
+
+# 4. Démarrer le reste du minimal
+echo "🔹 Démarrage du reste des services (mongo, etc.)..."
+docker compose -f docker-compose.minimal.yml up -d
+
+echo "✅ rDrive est lancé."
+
+
+echo "-----------------------------------------------------"
+echo "Étape 15: Installation et lancement du Back-end-view"
+echo "-----------------------------------------------------"
+
+# S'assurer d'être dans le répertoire de travail
+cd "$WORKDIR" || { echo "❌ WORKDIR introuvable: $WORKDIR"; exit 1; }
+
+# Vérifier la présence du dépôt Ryvie
+if [ ! -d "Ryvie" ]; then
+    echo "❌ Le dépôt 'Ryvie' est introuvable dans $WORKDIR. Assurez-vous qu'il a été cloné plus haut."
+    exit 1
+fi
+
+# Aller dans le dossier Back-end-view
+cd "Ryvie/Back-end-view" || { echo "❌ Dossier 'Ryvie/Back-end-view' introuvable"; exit 1; }
+
+# Copier le fichier .env depuis Desktop (fallback Bureau)
+SRC_ENV="$HOME/Desktop/.env"
+if [ ! -f "$SRC_ENV" ]; then
+  ALT_ENV="$HOME/Bureau/.env"
+  if [ -f "$ALT_ENV" ]; then
+    SRC_ENV="$ALT_ENV"
+  fi
+fi
+
+if [ -f "$SRC_ENV" ]; then
+  echo "📄 Copie de $SRC_ENV vers $(pwd)/.env"
+  cp "$SRC_ENV" .env
+else
+  echo "⚠️ Aucun .env trouvé sur Desktop ou Bureau. Étape de copie ignorée."
+fi
+
+# Installer les dépendances et lancer l'application
+echo "📦 Installation des dépendances (npm install)"
+npm install || { echo "❌ npm install a échoué"; exit 1; }
+
+echo "🚀 Lancement de Back-end-view (node index.js) au premier plan"
+echo "ℹ️ Les logs s'affichent ci-dessous. Appuyez sur Ctrl+C pour arrêter."
+mkdir -p logs
+# Afficher les logs en direct ET les sauvegarder dans un fichier
+node index.js 2>&1 | tee -a logs/backend-view.out
 
 
 newgrp docker
