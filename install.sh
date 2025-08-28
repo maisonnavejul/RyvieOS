@@ -671,7 +671,7 @@ sudo docker compose -f docker-compose.local.yml up -d
 
 # 4. Vérification du démarrage sur le port 3000
 echo "⏳ Attente du démarrage de rTransfer (port 3000)..."
-until curl -s http://localhost:3000 > /dev/null; do
+until curl -s http://localhost:3011 > /dev/null; do
     sleep 2
     echo -n "."
 done
