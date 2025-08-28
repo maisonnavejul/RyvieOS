@@ -717,13 +717,27 @@ sudo docker compose up -d
 
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 14: Préparation de Rclone"
+echo "Étape 14: Installation et préparation de Rclone"
 echo "-----------------------------------------------------"
 
-# Création du dossier de conf si besoin
-sudo mkdir -p /root/.config/rclone
+# Installer/mettre à jour Rclone (méthode officielle)
+# (réexécutable sans risque : met à jour si déjà installé)
+curl -fsSL https://rclone.org/install.sh | sudo bash
 
-# Création du fichier de conf vide s'il n'existe pas
+# Vérifie qu’il est bien là :
+# - essaie /usr/bin/rclone comme demandé
+# - sinon affiche l’emplacement réel retourné par command -v
+command -v rclone && ls -l /usr/bin/rclone || {
+  echo "ℹ️ rclone n'est pas sous /usr/bin, emplacement détecté :"
+  command -v rclone
+  ls -l "$(command -v rclone)" 2>/dev/null || true
+}
+
+# Version pour confirmation
+rclone version || true
+
+# Préparation du fichier de config (root)
+sudo mkdir -p /root/.config/rclone
 sudo touch /root/.config/rclone/rclone.conf
 
 # Permissions strictes
@@ -731,8 +745,9 @@ sudo chown -R root:root /root/.config/rclone
 sudo chmod 700 /root/.config/rclone
 sudo chmod 600 /root/.config/rclone/rclone.conf
 
-# Vérification du chemin de config
+# Vérification du chemin utilisé par rclone (root)
 sudo rclone config file
+
 echo ""
 echo "-----------------------------------------------------"
 echo "Étape 15: Installation et lancement de Ryvie rDrive"
