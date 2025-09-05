@@ -869,16 +869,26 @@ fi
 
 cd "$RDRIVE_DIR"
 
+# --- NEW: wrapper Docker (utilise sudo si nécessaire) + start du service ---
+if docker info >/dev/null 2>&1; then
+  DOCKER="docker"
+else
+  DOCKER="sudo docker"
+fi
+d() { $DOCKER "$@" ; }
+dc() { $DOCKER compose "$@" ; }
+# Assure que le daemon tourne (silencieux si déjà actif)
+sudo systemctl start docker 2>/dev/null || true
 
 # Fonction utilitaire pour attendre un conteneur Docker
 wait_cid() {
   local cid="$1"
   local name state health
-  name="$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##')"
+  name="$(d inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##')"
   echo "⏳ Attente du conteneur $name ..."
   while :; do
-    state="$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo 'unknown')"
-    health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || true)"
+    state="$(d inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo 'unknown')"
+    health="$(d inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || true)"
     if [[ "$state" == "running" && ( -z "$health" || "$health" == "healthy" ) ]]; then
       echo "✅ $name prêt."
       break
@@ -890,16 +900,14 @@ wait_cid() {
 
 # 1. Lancer OnlyOffice
 echo "🔹 Démarrage de OnlyOffice..."
-docker compose \
-  -f docker-compose.dev.onlyoffice.yml \
-  -f docker-compose.onlyoffice-connector-override.yml \
-  up -d
+dc -f docker-compose.dev.onlyoffice.yml \
+   -f docker-compose.onlyoffice-connector-override.yml \
+   up -d
 
 # 1b. Attendre que tous les conteneurs OnlyOffice soient prêts
-OO_CIDS=$(docker compose \
-  -f docker-compose.dev.onlyoffice.yml \
-  -f docker-compose.onlyoffice-connector-override.yml \
-  ps -q)
+OO_CIDS=$(dc -f docker-compose.dev.onlyoffice.yml \
+             -f docker-compose.onlyoffice-connector-override.yml \
+             ps -q)
 
 if [ -z "$OO_CIDS" ]; then
   echo "❌ Aucun conteneur détecté pour la stack OnlyOffice."
@@ -912,22 +920,22 @@ done
 
 # 2. Build et démarrage du service node
 echo "🔹 Build du service node..."
-docker compose -f docker-compose.minimal.yml build node
+dc -f docker-compose.minimal.yml build node
 
 echo "🔹 Démarrage du service node..."
-docker compose -f docker-compose.minimal.yml up -d node
+dc -f docker-compose.minimal.yml up -d node
 
 # 2b. Attendre que node soit prêt
-NODE_CID=$(docker compose -f docker-compose.minimal.yml ps -q node)
+NODE_CID=$(dc -f docker-compose.minimal.yml ps -q node)
 wait_cid "$NODE_CID"
 
 # 3. Lancer frontend
 echo "🔹 Démarrage du service frontend..."
-docker compose -f docker-compose.minimal.yml up -d frontend
+dc -f docker-compose.minimal.yml up -d frontend
 
 # 4. Démarrer le reste du minimal
 echo "🔹 Démarrage du reste des services (mongo, etc.)..."
-docker compose -f docker-compose.minimal.yml up -d
+dc -f docker-compose.minimal.yml up -d
 
 echo "✅ rDrive est lancé."
 
