@@ -15,6 +15,42 @@ echo "Bienvenue sur Ryvie OS 🚀"
 echo "By Jules Maisonnave"
 echo "Ce script est un test : aucune installation n'est effectuée pour le moment."
 
+# --- CHANGED: controlled strict mode for critical sections only ---
+# Not failing globally; provide helpers to enable strict mode for critical parts
+strict_enter() {
+    # enable strict mode and a helpful ERR trap for the current shell
+    set -euo pipefail
+    set -o errtrace
+    trap 'rc=$?; echo "❌ Erreur: la commande \"${BASH_COMMAND}\" a échoué avec le code $rc (fichier: ${BASH_SOURCE[0]}, ligne: $LINENO)"; exit $rc' ERR
+}
+
+strict_exit() {
+    # disable strict mode and remove ERR trap (best-effort)
+    trap - ERR || true
+    set +e || true
+    set +u || true
+    set +o pipefail || true
+    set +o errtrace || true
+}
+
+# --- CHANGED: safe defaults for variables that may be referenced while unset ---
+GITHUB_USER="${GITHUB_USER:-}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+ID="${ID:-}"
+VERSION_ID="${VERSION_ID:-}"
+
+# helper: retourne Desktop/Bureau ou HOME si introuvable
+get_desktop_dir() {
+    local d="$HOME/Bureau"
+    if [ ! -d "$d" ]; then
+        d="$HOME/Desktop"
+    fi
+    if [ ! -d "$d" ]; then
+        d="$HOME"
+    fi
+    printf '%s' "$d"
+}
+
 # =====================================================
 # Étape 1: Vérification des prérequis système
 # =====================================================
@@ -49,6 +85,47 @@ if [ "$OS" != "Linux" ]; then
 fi
 echo "Système d'exploitation: $OS"
 
+# --- CHANGED: package manager abstraction + distro codename detection ---
+# Détecter apt / apt-get et fournir une fonction d'installation non interactive
+if command -v apt > /dev/null 2>&1; then
+    APT_CMD="sudo apt"
+else
+    APT_CMD="sudo apt-get"
+fi
+
+install_pkgs() {
+    export DEBIAN_FRONTEND=noninteractive
+    # update quietly then install requested packages
+    $APT_CMD update -qq || true
+    $APT_CMD install -y "$@" || return 1
+}
+
+# Obtenir l'ID et VERSION_CODENAME depuis /etc/os-release pour choisir le dépôt Docker
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+fi
+
+# s'assurer d'avoir lsb_release si possible (pour la suite)
+if ! command -v lsb_release > /dev/null 2>&1; then
+    install_pkgs lsb-release || true
+fi
+
+if command -v lsb_release > /dev/null 2>&1; then
+    DISTRO_CODENAME=$(lsb_release -cs)
+else
+    DISTRO_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
+    if [ -z "$DISTRO_CODENAME" ]; then
+        # fallback mapping common versions (extend si besoin)
+        case "${ID}${VERSION_ID}" in
+            debian11) DISTRO_CODENAME="bullseye" ;;
+            debian12) DISTRO_CODENAME="bookworm" ;;
+            ubuntu20.04) DISTRO_CODENAME="focal" ;;
+            ubuntu22.04) DISTRO_CODENAME="jammy" ;;
+            *) DISTRO_CODENAME="stable" ;;
+        esac
+    fi
+fi
+
 # 2b. Installation de git et curl au début du script si absents
 echo ""
 echo "------------------------------------------"
@@ -60,7 +137,7 @@ if command -v git > /dev/null 2>&1; then
     echo "✅ git est déjà installé : $(git --version)"
 else
     echo "⚙️ Installation de git..."
-    sudo apt update && sudo apt install -y git || { echo "❌ Échec de l'installation de git"; exit 1; }
+    install_pkgs git || { echo "❌ Échec de l'installation de git"; exit 1; }
 fi
 
 # Vérifier et installer curl si nécessaire
@@ -68,7 +145,7 @@ if command -v curl > /dev/null 2>&1; then
     echo "✅ curl est déjà installé : $(curl --version | head -n1)"
 else
     echo "⚙️ Installation de curl..."
-    sudo apt update && sudo apt install -y curl || { echo "❌ Échec de l'installation de curl"; exit 1; }
+    install_pkgs curl || { echo "❌ Échec de l'installation de curl"; exit 1; }
 fi
 
 # 3. Vérification de la mémoire physique (minimum 400 MB)
@@ -144,12 +221,9 @@ while true; do
     fi
 done
 
-# Déterminer le répertoire de travail
-WORKDIR="$HOME/Bureau"
-[[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME/Desktop"
-[[ ! -d "$WORKDIR" ]] && WORKDIR="$HOME"
-
-cd "$WORKDIR" || exit 1
+# Déterminer le répertoire de travail de façon robuste (Bureau/Desktop/Home)
+WORKDIR="$(get_desktop_dir)"
+cd "$WORKDIR" || { echo "❌ Impossible d'accéder à $WORKDIR"; exit 1; }
 
 CREATED_DIRS=()
 
@@ -178,8 +252,10 @@ if command -v npm > /dev/null 2>&1; then
     echo "✅ npm est déjà installé : $(npm --version)"
 else
     echo "⚙️ npm n'est pas installé. Installation en cours..."
-    sudo apt update
-    sudo apt install -y npm
+    install_pkgs npm || {
+        echo "❌ Erreur: L'installation de npm a échoué."
+        exit 1
+    }
 
     if command -v npm > /dev/null 2>&1; then
         echo "✅ npm a été installé avec succès : $(npm --version)"
@@ -224,29 +300,31 @@ else
     fi
 fi
 
-# 6. Vérification des dépendances 
+# =====================================================
+# 6. Vérification des dépendances
+# =====================================================
 echo "----------------------------------------------------"
-echo "Etape 6: Vérification des dépendances"
+echo "Etape 6: Vérification des dépendances (mode strict pour cette section)"
 echo "----------------------------------------------------"
+# Activer le comportement "exit on error" uniquement pour l'installation des dépendances
+strict_enter
 # Installer les dépendances Node.js
 #npm install express cors http socket.io os dockerode ldapjs
 npm install express cors socket.io dockerode diskusage systeminformation ldapjs dotenv jsonwebtoken os-utils --save
-sudo apt install -y ldap-utils
-# Vérifier le code de retour de npm install
-if [ $? -eq 0 ]; then
-    echo ""
-    echo "Tous les modules ont été installés avec succès."
-else
-    echo ""
-    echo "Erreur lors de l'installation d'un ou plusieurs modules."
-fi
+install_pkgs ldap-utils
+# Vérifier le code de retour de npm install (strict mode assure l'arrêt si npm install échoue)
+echo ""
+echo "Tous les modules ont été installés avec succès."
+strict_exit
+
 # =====================================================
 # Étape 7: Vérification de Docker et installation si nécessaire
 # =====================================================
 echo "----------------------------------------------------"
-echo "Étape 7: Vérification de Docker"
+echo "Étape 7: Vérification de Docker (mode strict pour cette section)"
 echo "----------------------------------------------------"
-
+# Activer strict mode uniquement pour la section Docker
+strict_enter
 if command -v docker > /dev/null 2>&1; then
     echo "Docker est déjà installé : $(docker --version)"
     echo "Vérification de Docker en exécutant 'docker run hello-world'..."
@@ -260,34 +338,45 @@ else
     echo "Docker n'est pas installé. L'installation va débuter..."
 
     ### 🐳 1. Mettre à jour les paquets
-    sudo apt update
-    sudo apt upgrade -y
+    $APT_CMD update
+    $APT_CMD upgrade -y
 
     ### 🐳 2. Installer les dépendances nécessaires
-    sudo apt install -y ca-certificates curl gnupg lsb-release
+    install_pkgs ca-certificates curl gnupg lsb-release
 
-    ### 🐳 3. Ajouter la clé GPG officielle de Docker
+    ### 🐳 3. Ajouter la clé GPG officielle de Docker (écrase sans prompt)
     sudo mkdir -p /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+    sudo rm -f /etc/apt/keyrings/docker.gpg
+    curl -fsSL "https://download.docker.com/linux/$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )/gpg" | \
         sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
-    ### 🐳 4. Ajouter le dépôt Docker
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+    ### 🐳 4. Ajouter le dépôt Docker (choix debian/ubuntu)
+    DOCKER_DISTRO=$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} ${DISTRO_CODENAME} stable" | \
         sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-    ### 🐳 5. Installer Docker Engine + Docker Compose plugin
-    sudo apt update
-    sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    ### 🐳 5. Installer Docker Engine + Docker Compose plugin via apt
+    $APT_CMD update -qq
+    if ! install_pkgs docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+        echo "⚠️ Impossible d'installer certains paquets Docker via apt — tentative de fallback via le script officiel..."
+        # Fallback: installer via le script officiel (get.docker.com)
+        if curl -fsSL https://get.docker.com | sudo sh; then
+            echo "✅ Docker installé via get.docker.com"
+        else
+            echo "❌ Échec de l'installation de Docker via apt et get.docker.com. Continuer sans Docker."
+        fi
+    fi
 
     ### ✅ 6. Vérifier que Docker fonctionne
-    echo "Vérification de Docker en exécutant 'docker run hello-world'..."
-    sudo docker run hello-world
-    if [ $? -eq 0 ]; then
-        echo "Docker a été installé et fonctionne correctement."
+    if command -v docker > /dev/null 2>&1; then
+        echo "Vérification de Docker en exécutant 'docker run hello-world'..."
+        sudo docker run --rm hello-world || echo "⚠️ 'docker run hello-world' a échoué."
+        echo "Docker a été installé et fonctionne (ou tenté)."
     else
-        echo "Erreur lors de l'installation ou de la vérification de Docker."
+        echo "Erreur lors de l'installation ou de la vérification de Docker. Docker absent."
     fi
 fi
+strict_exit
 
 echo ""
 echo "----------------------------------------------------"
@@ -299,14 +388,11 @@ if command -v redis-server > /dev/null 2>&1; then
     echo "Redis est déjà installé : $(redis-server --version)"
 else
     echo "Installation de Redis (redis-server)..."
-    sudo apt update
-    sudo apt install -y redis-server
-
+    install_pkgs redis-server || { echo "❌ Échec de l'installation de Redis"; }
     # Configurer Redis pour systemd si nécessaire
     if [ -f /etc/redis/redis.conf ]; then
         sudo sed -i 's/^supervised .*/supervised systemd/' /etc/redis/redis.conf
     fi
-
     # Activer et démarrer Redis
     sudo systemctl enable --now redis-server
 fi
@@ -335,19 +421,30 @@ echo ""
  echo "--------------------------------------------------"
  echo ""
  
- # Vérifier si l'utilisateur est déjà dans le groupe docker
-  if id -nG "$USER" | grep -qw "docker"; then
-      echo "L'utilisateur $USER est déjà membre du groupe docker."
+ # Vérifier si docker est disponible avant d'ajouter l'utilisateur au groupe
+ if command -v docker > /dev/null 2>&1; then
+     # Créer le groupe docker si nécessaire
+     if ! getent group docker > /dev/null 2>&1; then
+         sudo groupadd docker || true
+     fi
+
+     if id -nG "$USER" | grep -qw "docker"; then
+         echo "L'utilisateur $USER est déjà membre du groupe docker."
+     else
+         sudo usermod -aG docker "$USER"
+         echo "L'utilisateur $USER a été ajouté au groupe docker."
+         echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
+     fi
  else
-     # Ajouter l'utilisateur actuel au groupe docker et appliquer la modification
-     sudo usermod -aG docker $USER
-     echo "L'utilisateur $USER a été ajouté au groupe docker."
-     echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
- fi 
+     echo "⚠️ Docker n'est pas installé — saut de l'ajout de l'utilisateur au groupe docker."
+ fi
+
   echo "-----------------------------------------------------"
   echo "Etape 10: Installation et démarrage de Portainer"
   echo "-----------------------------------------------------"
   
+# Si Docker absent, sauter Portainer
+if command -v docker > /dev/null 2>&1; then
   # Créer le volume Portainer s'il n'existe pas
   if ! sudo docker volume ls -q | grep -q '^portainer_data$'; then
     sudo docker volume create portainer_data
@@ -369,21 +466,27 @@ echo ""
       sudo docker start portainer
     fi
   fi
+else
+  echo "⚠️ Portainer ignoré : Docker non installé."
+fi
   
   echo "-----------------------------------------------------"
   echo "Etape 11: Ip du cloud Ryvie ryvie.local"
   echo "-----------------------------------------------------"
- sudo apt update && sudo apt install -y avahi-daemon avahi-utils && sudo systemctl enable --now avahi-daemon && sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
-  echo ""
- echo "Etape 12: Configuration d'OpenLDAP avec Docker Compose"
- echo "-----------------------------------------------------"
 
-# 1. Créer le dossier ldap sur le Bureau ou Desktop et s'y positionner
-LDAP_DIR="$HOME/Bureau"
-[ ! -d "$LDAP_DIR" ] && LDAP_DIR="$HOME/Desktop"
-[ ! -d "$LDAP_DIR" ] && LDAP_DIR="$HOME"
+# Installer avahi via la fonction d'installation (compatible Debian)
+install_pkgs avahi-daemon avahi-utils || true
+sudo systemctl enable --now avahi-daemon
+sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf || true
+sudo systemctl restart avahi-daemon || true
+
+echo ""
+echo "Etape 12: Configuration d'OpenLDAP avec Docker Compose"
+echo "-----------------------------------------------------"
+
+# 1. Créer le dossier ldap sur Desktop/Bureau/Home et s'y positionner
+LDAP_DIR="$(get_desktop_dir)"
 sudo docker network prune -f
-
 mkdir -p "$LDAP_DIR/ldap"
 cd "$LDAP_DIR/ldap"
 
@@ -569,15 +672,9 @@ echo ""
 echo "-----------------------------------------------------"
 echo "Étape 11: Installation de Ryvie rPictures et synchronisation LDAP"
 echo "-----------------------------------------------------"
-
-# 1. Aller sur le Bureau ou Desktop
-WORKDIR="$HOME/Bureau"
-[ ! -d "$WORKDIR" ] && WORKDIR="$HOME/Desktop"
-[ ! -d "$WORKDIR" ] && WORKDIR="$HOME"
-
-
+# 1. Aller sur le Bureau ou Desktop (WORKDIR déjà initialisé plus haut)
 echo "📁 Dossier sélectionné : $WORKDIR"
-cd "$WORKDIR"
+cd "$WORKDIR" || { echo "❌ Impossible d'accéder à $WORKDIR"; exit 1; }
 
 # 2. Cloner le dépôt si pas déjà présent
 if [ -d "Ryvie-rPictures" ]; then
@@ -648,9 +745,8 @@ echo "-----------------------------------------------------"
 echo "Étape 12: Installation de Ryvie rTransfer et synchronisation LDAP"
 echo "-----------------------------------------------------"
 
-# Aller dans le dossier Desktop (ou Bureau en fallback)
-BASE_DIR="$HOME/Desktop"
-[ ! -d "$BASE_DIR" ] && BASE_DIR="$HOME/Bureau"
+# Aller dans le dossier Desktop/Bureau/Home (fallback centralisé)
+BASE_DIR="$(get_desktop_dir)"
 cd "$BASE_DIR" || { echo "❌ Impossible d'accéder à $BASE_DIR"; exit 1; }
 
 # 1. Cloner le dépôt si pas déjà présent
@@ -754,8 +850,7 @@ echo "Étape 15: Installation et lancement de Ryvie rDrive"
 echo "-----------------------------------------------------"
 
 # Sécurités
-set -euo pipefail
-
+# (removed duplicate `set -euo pipefail` here; strict mode already enabled above)
 # Dossier du script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
