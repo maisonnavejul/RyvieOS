@@ -1,3 +1,4 @@
+
 #!/bin/bash
 echo ""
 echo "
@@ -939,7 +940,6 @@ dc -f docker-compose.minimal.yml up -d
 
 echo "✅ rDrive est lancé."
 
-
 echo "-----------------------------------------------------"
 echo "Étape 16: Installation et lancement du Back-end-view"
 echo "-----------------------------------------------------"
@@ -956,31 +956,382 @@ fi
 # Aller dans le dossier Back-end-view
 cd "Ryvie/Back-end-view" || { echo "❌ Dossier 'Ryvie/Back-end-view' introuvable"; exit 1; }
 
-# Copier le fichier .env depuis Desktop (fallback Bureau)
-SRC_ENV="$HOME/Desktop/.env"
-if [ ! -f "$SRC_ENV" ]; then
-  ALT_ENV="$HOME/Bureau/.env"
-  if [ -f "$ALT_ENV" ]; then
-    SRC_ENV="$ALT_ENV"
-  fi
-fi
+# Définir les emplacements possibles pour le fichier .env
+POSSIBLE_ENV_PATHS=(
+    "$HOME/Desktop/.env"       # English desktop
+    "$HOME/Bureau/.env"        # French desktop
+    "$HOME/.env"               # Home directory
+    "/root/.env"               # Root home directory
+)
+
+# Chercher un fichier .env existant
+SRC_ENV=""
+for env_path in "${POSSIBLE_ENV_PATHS[@]}"; do
+    if [ -f "$env_path" ]; then
+        SRC_ENV="$env_path"
+        echo "✅ Fichier .env trouvé à: $SRC_ENV"
+        break
+    fi
+done
 
 if [ -f "$SRC_ENV" ]; then
   echo "📄 Copie de $SRC_ENV vers $(pwd)/.env"
   cp "$SRC_ENV" .env
 else
-  echo "⚠️ Aucun .env trouvé sur Desktop ou Bureau. Étape de copie ignorée."
+  echo "⚠️ Aucun .env trouvé sur Desktop ou Bureau. Création d'un fichier .env par défaut..."
+  cat > .env << 'EOL'
+PORT=3002
+REDIS_URL=redis://127.0.0.1:6379
+ENCRYPTION_KEY=cQO6ti5443SHwT0+ERK61fAkse/F33cTIfHqDfskOZE=
+JWT_ENCRYPTION_KEY=l6cjqwghDHw+kqqvBXcGVZt8ctCbQEnJ9mBXS1V7Kjs=
+JWT_SECRET=8d168c01d550434ad8332a9aaad9eae15344d4ad0f5f41f4dca28d5d9c26f3ec1d87c8e2ea2eb78e0bd2b38085dd9a11a2699db18751199052f94a2ea14568fd
+# Configuration LDAP
+LDAP_URL=ldap://localhost:389
+LDAP_BIND_DN=cn=read-only,ou=users,dc=example,dc=org
+LDAP_BIND_PASSWORD=readpassword
+LDAP_USER_SEARCH_BASE=ou=users,dc=example,dc=org
+LDAP_GROUP_SEARCH_BASE=ou=users,dc=example,dc=org
+LDAP_USER_FILTER=(objectClass=inetOrgPerson)
+LDAP_GROUP_FILTER=(objectClass=groupOfNames)
+LDAP_ADMIN_GROUP=cn=admins,ou=users,dc=example,dc=org
+LDAP_USER_GROUP=cn=users,ou=users,dc=example,dc=org
+LDAP_GUEST_GROUP=cn=guests,ou=users,dc=example,dc=org
+
+# Security Configuration
+DEFAULT_EMAIL_DOMAIN=example.org
+AUTH_RATE_LIMIT_WINDOW_MS=900000
+AUTH_RATE_LIMIT_MAX_ATTEMPTS=5
+API_RATE_LIMIT_WINDOW_MS=900000
+API_RATE_LIMIT_MAX_REQUESTS=100
+BRUTE_FORCE_MAX_ATTEMPTS=5
+BRUTE_FORCE_BLOCK_DURATION_MS=900000
+ENABLE_SECURITY_LOGGING=true
+LOG_FAILED_ATTEMPTS=true
+
+# Session Security
+SESSION_TIMEOUT_MS=3600000
+MAX_CONCURRENT_SESSIONS=3
+
+# Production Security (set to true for production)
+FORCE_HTTPS=false
+ENABLE_HELMET=true
+ENABLE_CORS_CREDENTIALS=false
+EOL
+  echo "✅ Fichier .env par défaut créé avec succès"
 fi
 
-# Installer les dépendances et lancer l'application
+# Installer PM2 globalement si ce n'est pas déjà fait
+if ! command -v pm2 &> /dev/null; then
+    echo "📦 Installation de PM2..."
+    sudo npm install -g pm2 || { echo "❌ Échec de l'installation de PM2"; exit 1; }
+    # Configurer PM2 pour le démarrage automatique
+    sudo pm2 startup
+fi
+
+# Installer les dépendances
 echo "📦 Installation des dépendances (npm install)"
 npm install || { echo "❌ npm install a échoué"; exit 1; }
 
-echo "🚀 Lancement de Back-end-view (node index.js) au premier plan"
-echo "ℹ️ Les logs s'affichent ci-dessous. Appuyez sur Ctrl+C pour arrêter."
+# Créer le dossier de logs s'il n'existe pas
 mkdir -p logs
-# Afficher les logs en direct ET les sauvegarder dans un fichier
-node index.js 2>&1 | tee -a logs/backend-view.out
 
+# Démarrer ou redémarrer le service avec PM2
+echo "🚀 Démarrage du Back-end-view avec PM2..."
+pm2 describe backend-view > /dev/null 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "🔄 Redémarrage du service backend-view existant..."
+    pm2 restart backend-view --update-env
+else
+    echo "✨ Création d'un nouveau service PM2 pour backend-view..."
+    pm2 start index.js --name "backend-view" --output "logs/backend-view-out.log" --error "logs/backend-error.log" --time
+fi
+
+# Sauvegarder la configuration PM2
+pm2 save
+
+# Configurer PM2 pour le démarrage automatique
+pm2 startup | tail -n 1 | bash
+
+echo "✅ Back-end-view est géré par PM2"
+echo "📝 Logs d'accès: $(pwd)/logs/backend-view-out.log"
+echo "📝 Logs d'erreur: $(pwd)/logs/backend-error.log"
+echo "ℹ️ Commandes utiles:"
+echo "   - Voir les logs: pm2 logs backend-view"
+echo "   - Arrêter: pm2 stop backend-view"
+echo "   - Redémarrer: pm2 restart backend-view"
+echo "   - Statut: pm2 status"
+
+# Frontend setup with PM2
+FRONTEND_DIR="Ryvie/Ryvie-Front"
+if [ -d "$FRONTEND_DIR" ]; then
+    echo "\n🚀 Configuration du frontend avec PM2..."
+    cd "$FRONTEND_DIR" || { echo "❌ Impossible d'accéder au dossier $FRONTEND_DIR"; exit 1; }
+    
+    # Install frontend dependencies
+    echo "📦 Installation des dépendances du frontend..."
+    npm install || { echo "❌ Échec de l'installation des dépendances du frontend"; exit 1; }
+    
+    # Build the frontend
+    echo "🔨 Construction du frontend..."
+    npm run build || { echo "❌ Échec de la construction du frontend"; exit 1; }
+    
+    # Install serve if not present
+    if ! command -v serve &> /dev/null; then
+        echo "📦 Installation de serve globalement..."
+        sudo npm install -g serve
+    fi
+    
+    # Start frontend with PM2
+    echo "🚀 Démarrage du frontend avec PM2..."
+    pm2 describe frontend > /dev/null 2>&1
+    
+    if [ $? -eq 0 ]; then
+        echo "🔄 Redémarrage du service frontend existant..."
+        pm2 restart frontend --update-env
+    else
+        echo "✨ Création d'un nouveau service PM2 pour le frontend..."
+        pm2 serve build 3000 --spa --name "frontend" --output "../logs/frontend-out.log" --error "../logs/frontend-error.log" --time
+    fi
+    
+    # Save PM2 configuration
+    pm2 save
+    
+    echo "✅ Frontend est géré par PM2"
+    echo "📝 Logs d'accès: $(pwd)/../logs/frontend-out.log"
+    echo "📝 Logs d'erreur: $(pwd)/../logs/frontend-error.log"
+    echo "🌐 Frontend disponible sur: http://localhost:3000"
+    echo "ℹ️ Commandes utiles:"
+    echo "   - Voir les logs: pm2 logs frontend"
+    echo "   - Arrêter: pm2 stop frontend"
+    echo "   - Redémarrer: pm2 restart frontend"
+    
+    # Return to original directory
+    cd - > /dev/null
+else
+    echo "\n⚠️ Dossier du frontend non trouvé: $FRONTEND_DIR"
+    echo "   Le frontend ne sera pas démarré automatiquement."
+fi
+
+# NetBird Configuration
+(
+    echo "🚀 Lancement de la configuration NetBird..."
+    cd "$WORKDIR"
+    
+    # NetBird Configuration
+    MANAGEMENT_URL="https://netbird.migrate.fr"
+    SETUP_KEY="8B66987F-28A4-4DB0-8A19-65739C7ADD26"
+    API_ENDPOINT="http://netbird.migrate.fr:8088/api/register"
+    NETBIRD_INTERFACE="wt0"
+
+    # Colors for output
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    NC='\033[0m' # No Color
+
+    # Function to print colored messages
+    log_info() {
+        echo -e "${GREEN}[INFO]${NC} $1"
+    }
+
+    log_error() {
+        echo -e "${RED}[ERROR]${NC} $1"
+    }
+
+    log_warning() {
+        echo -e "${YELLOW}[WARNING]${NC} $1"
+    }
+
+    # Function to check if NetBird is installed
+    check_netbird_installed() {
+        if command -v netbird &> /dev/null; then
+            return 0
+        else
+            return 1
+        fi
+    }
+
+    # Function to detect OS and architecture
+    detect_system() {
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m)
+
+        case $ARCH in
+            x86_64)
+                ARCH="amd64"
+                ;;
+            aarch64|arm64)
+                ARCH="arm64"
+                ;;
+            armv7l)
+                ARCH="armv7"
+                ;;
+            *)
+                log_error "Unsupported architecture: $ARCH"
+                exit 1
+                ;;
+        esac
+
+        log_info "Detected system: $OS/$ARCH"
+    }
+
+    # Simplified NetBird installation using official script
+    install_netbird() {
+        log_info "Installing NetBird using official install script..."
+
+        if curl -fsSL https://pkgs.netbird.io/install.sh | sh; then
+            log_info "NetBird installed successfully"
+        else
+            log_error "NetBird installation failed"
+            exit 1
+        fi
+    }
+
+    # Function to check if NetBird is connected
+    check_netbird_connected() {
+        if netbird status &> /dev/null; then
+            STATUS=$(netbird status | grep "Management" | grep "Connected")
+            if [ -n "$STATUS" ]; then
+                return 0
+            fi
+        fi
+        return 1
+    }
+
+    # Function to connect NetBird
+    connect_netbird() {
+        log_info "Connecting to NetBird management server..."
+        sudo netbird down &> /dev/null
+        sudo netbird up --management-url "$MANAGEMENT_URL" --setup-key "$SETUP_KEY"
+        sleep 5
+
+        if check_netbird_connected; then
+            log_info "NetBird connected successfully"
+        else
+            log_error "Failed to connect to NetBird management server"
+            exit 1
+        fi
+    }
+
+    # Function to wait for interface to be ready
+    wait_for_interface() {
+        local max_attempts=30
+        local attempt=1
+
+        log_info "Waiting for $NETBIRD_INTERFACE interface to be ready..."
+
+        while [ $attempt -le $max_attempts ]; do
+            if ip link show "$NETBIRD_INTERFACE" &> /dev/null; then
+                IP=$(ip -4 addr show dev "$NETBIRD_INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+                if [ -n "$IP" ]; then
+                    log_info "Interface $NETBIRD_INTERFACE is ready with IP: $IP"
+                    return 0
+                fi
+            fi
+            log_warning "Attempt $attempt/$max_attempts: Waiting for interface..."
+            sleep 2
+            attempt=$((attempt + 1))
+        done
+
+        log_error "Interface $NETBIRD_INTERFACE did not become ready in time"
+        return 1
+    }
+
+    # Function to register with API
+    register_with_api() {
+        log_info "Registering with API..."
+
+        IP=$(ip -4 addr show dev "$NETBIRD_INTERFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+
+        if [ -z "$IP" ]; then
+            log_error "Could not find IP for interface $NETBIRD_INTERFACE"
+            exit 1
+        fi
+
+        log_info "Using IP address: $IP"
+        detect_system
+
+        if [ -f /etc/machine-id ]; then
+            MACHINE_ID=$(cat /etc/machine-id)
+        else
+            MACHINE_ID=$(uuidgen || echo "$(hostname)-$(date +%s)")
+        fi
+
+        # Save response body to netbird_data and capture HTTP status code
+        HTTP_CODE=$(curl -s -w "%{http_code}" -o netbird_data -X POST "$API_ENDPOINT" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"machineId\": \"$MACHINE_ID\",
+                \"arch\": \"$ARCH\",
+                \"os\": \"$OS\",
+                \"backendHost\": \"$IP\",
+                \"services\": [
+                    \"rdrive\", \"rtransfer\", \"rdrop\", \"rpictures\",
+                    \"app\", \"status\",
+                    \"backend.rdrive\", \"connector.rdrive\", \"document.rdrive\"
+                ]
+            }")
+
+        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+            log_info "Successfully registered with API"
+            
+            # Copy netbird-data.json to Ryvie frontend config
+            TARGET_DIR="Ryvie/Ryvie-Front/src/config"
+            JSON_FILE="netbird-data.json"
+            
+            # Rename netbird_data to netbird-data.json if it exists
+            if [ -f "netbird_data" ]; then
+                mv "netbird_data" "$JSON_FILE"
+            fi
+            
+            if [ -f "$JSON_FILE" ]; then
+                log_info "Copying $JSON_FILE to $TARGET_DIR"
+                mkdir -p "$TARGET_DIR"
+                if cp "$JSON_FILE" "$TARGET_DIR/"; then
+                    log_info "Successfully copied $JSON_FILE to $TARGET_DIR"
+                else
+                    log_warning "Failed to copy $JSON_FILE to $TARGET_DIR"
+                fi
+            else
+                log_warning "$JSON_FILE file not found, skipping copy to $TARGET_DIR"
+            fi
+        else
+            log_error "Failed to register with API (HTTP $HTTP_CODE)"
+            if [ -f "netbird_data" ]; then
+                log_error "See response body in: netbird_data"
+            fi
+            exit 1
+        fi
+    }
+
+    # Main execution
+    log_info "Starting NetBird setup and registration"
+
+    if [ "$EUID" -ne 0 ] && ! check_netbird_installed; then
+        log_error "Please run this script as root or with sudo for installation"
+        exit 1
+    fi
+
+    if ! check_netbird_installed; then
+        log_info "NetBird not found, installing..."
+        install_netbird
+    else
+        log_info "NetBird is already installed"
+    fi
+
+    if ! check_netbird_connected; then
+        connect_netbird
+    else
+        log_info "NetBird is already connected"
+    fi
+
+    if ! wait_for_interface; then
+        exit 1
+    fi
+
+    register_with_api
+    log_info "NetBird setup completed successfully!"
+) &
 
 newgrp docker
