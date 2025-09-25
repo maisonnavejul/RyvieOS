@@ -269,7 +269,7 @@ fi
 
 echo ""
 echo "------------------------------------------"
-echo " Étape 5 : Vérification et installation de Node.js "
+echo " Étape 2 : Vérification et installation de Node.js "
 echo "------------------------------------------"
 echo ""
 
@@ -305,7 +305,7 @@ fi
 # 6. Vérification des dépendances
 # =====================================================
 echo "----------------------------------------------------"
-echo "Etape 6: Vérification des dépendances (mode strict pour cette section)"
+echo "Etape 3: Vérification des dépendances (mode strict pour cette section)"
 echo "----------------------------------------------------"
 # Activer le comportement "exit on error" uniquement pour l'installation des dépendances
 strict_enter
@@ -322,7 +322,7 @@ strict_exit
 # Étape 7: Vérification de Docker et installation si nécessaire
 # =====================================================
 echo "----------------------------------------------------"
-echo "Étape 7: Vérification de Docker (mode strict pour cette section)"
+echo "Étape 4: Vérification de Docker (mode strict pour cette section)"
 echo "----------------------------------------------------"
 # Activer strict mode uniquement pour la section Docker
 strict_enter
@@ -380,7 +380,7 @@ fi
 strict_exit
 echo ""
 echo "----------------------------------------------------"
-echo "Étape X: Installation de Redis"
+echo "Étape 5: Installation et Configuration de NetBird "
 echo "----------------------------------------------------"
 #!/bin/bash
 
@@ -829,7 +829,7 @@ fi
 
 echo ""
 echo "----------------------------------------------------"
-echo "Étape 8: Installation de Redis"
+echo "Étape 6: Installation de Redis"
 echo "----------------------------------------------------"
 
 # Vérifier si Redis est déjà installé
@@ -866,7 +866,7 @@ fi
 
 echo ""
  echo "--------------------------------------------------"
- echo "Etape 9: Ajout de l'utilisateur ($USER) au groupe docker "
+ echo "Etape 7: Ajout de l'utilisateur ($USER) au groupe docker "
  echo "--------------------------------------------------"
  echo ""
  
@@ -889,7 +889,7 @@ echo ""
  fi
 
   echo "-----------------------------------------------------"
-  echo "Etape 10: Installation et démarrage de Portainer"
+  echo "Etape 8: Installation et démarrage de Portainer"
   echo "-----------------------------------------------------"
   
 # Si Docker absent, sauter Portainer
@@ -920,7 +920,7 @@ else
 fi
   
   echo "-----------------------------------------------------"
-  echo "Etape 11: Ip du cloud Ryvie ryvie.local "
+  echo "Etape 9: Ip du cloud Ryvie ryvie.local "
   echo "-----------------------------------------------------"
 
 # Installer avahi via la fonction d'installation (compatible Debian)
@@ -1119,7 +1119,7 @@ echo "✅ Configuration ACL pour le groupe admins appliquée."
  echo " ( à implémenter non mis car mdp dedans )"
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 11: Installation de Ryvie rPictures et synchronisation LDAP"
+echo "Étape 10: Installation de Ryvie rPictures et synchronisation LDAP"
 echo "-----------------------------------------------------"
 # 1. Aller sur le Bureau ou Desktop (WORKDIR déjà initialisé plus haut)
 echo "📁 Dossier sélectionné : $WORKDIR"
@@ -1191,7 +1191,7 @@ else
 fi
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 12: Installation de Ryvie rTransfer et synchronisation LDAP"
+echo "Étape 11: Installation de Ryvie rTransfer et synchronisation LDAP"
 echo "-----------------------------------------------------"
 
 # Aller dans le dossier Desktop/Bureau/Home (fallback centralisé)
@@ -1227,7 +1227,7 @@ echo "✅ rTransfer est lancé et prêt avec l’authentification LDAP."
 echo ""
 echo "-----------------------------------------------------"
 echo "-----------------------------------------------------"
-echo "Étape 13: Installation de Ryvie rDrop"
+echo "Étape 12: Installation de Ryvie rDrop"
 echo "-----------------------------------------------------"
 
 cd "$WORKDIR"
@@ -1262,7 +1262,7 @@ sudo docker compose up -d
 
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 14: Installation et préparation de Rclone"
+echo "Étape 13: Installation et préparation de Rclone"
 echo "-----------------------------------------------------"
 
 # Installer/mettre à jour Rclone (méthode officielle)
@@ -1295,7 +1295,7 @@ sudo rclone config file
 
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 15: Installation et lancement de Ryvie rDrive"
+echo "Étape 14: Installation et lancement de Ryvie rDrive"
 echo "-----------------------------------------------------"
 
 # Sécurités
@@ -1389,7 +1389,7 @@ dc -f docker-compose.minimal.yml up -d
 echo "✅ rDrive est lancé."
 
 echo "-----------------------------------------------------"
-echo "Étape 16: Installation et lancement du Back-end-view et Front-end"
+echo "Étape 15: Installation et lancement du Back-end-view et Front-end"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
