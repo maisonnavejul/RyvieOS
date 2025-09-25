@@ -378,6 +378,454 @@ else
     fi
 fi
 strict_exit
+echo ""
+echo "----------------------------------------------------"
+echo "Étape X: Installation de Redis"
+echo "----------------------------------------------------"
+#!/bin/bash
+
+#==========================================
+# NetBird Configuration and Setup Script
+#==========================================
+# Description: Complete NetBird installation, connection, and API registration
+# Author: Ryvie Project
+# Version: 1.0
+#==========================================
+
+
+
+#==========================================
+# CONFIGURATION
+#==========================================
+readonly MANAGEMENT_URL="https://netbird.ryvie.ovh"
+readonly SETUP_KEY="C25ABA40-84E1-4E10-A94F-23780B8612B7"
+readonly API_ENDPOINT="http://netbird.ryvie.ovh:8088/api/register"
+readonly NETBIRD_INTERFACE="wt0"
+readonly TARGET_DIR="Ryvie/Ryvie-Front/src/config"
+RDRIVE_DIR="Ryvie-rDrive/tdrive"
+
+#==========================================
+# COLORS FOR OUTPUT
+#==========================================
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m' # No Color
+
+#==========================================
+# LOGGING FUNCTIONS
+#==========================================
+log_info()    { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
+log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+log_debug()   { echo -e "${BLUE}[DEBUG]${NC} $1"; }
+
+#==========================================
+# UTILITY FUNCTIONS
+#==========================================
+
+# Check if command exists
+command_exists() {
+    command -v "$1" &> /dev/null
+}
+
+# Check if running as root
+is_root() {
+    [ "$EUID" -eq 0 ]
+}
+
+# Get machine ID
+get_machine_id() {
+    if [ -f /etc/machine-id ]; then
+        cat /etc/machine-id
+    else
+        uuidgen 2>/dev/null || echo "$(hostname)-$(date +%s)"
+    fi
+}
+
+#==========================================
+# SYSTEM DETECTION
+#==========================================
+detect_system() {
+    local os arch
+    
+    os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    arch=$(uname -m)
+
+    case $arch in
+        x86_64)          arch="amd64" ;;
+        aarch64|arm64)   arch="arm64" ;;
+        armv7l)          arch="armv7" ;;
+        *) 
+            log_error "Unsupported architecture: $arch"
+            exit 1
+            ;;
+    esac
+
+    log_info "Detected system: $os/$arch"
+    
+    # Export for global use
+    export DETECTED_OS="$os"
+    export DETECTED_ARCH="$arch"
+}
+
+#==========================================
+# NETBIRD FUNCTIONS
+#==========================================
+
+check_netbird_installed() {
+    command_exists netbird
+}
+
+install_netbird() {
+    log_info "Installing NetBird using official install script..."
+    
+    if curl -fsSL https://pkgs.netbird.io/install.sh | sh; then
+        log_info "NetBird installed successfully"
+    else
+        log_error "NetBird installation failed"
+        exit 1
+    fi
+}
+
+check_netbird_connected() {
+    if netbird status &> /dev/null; then
+        local status
+        status=$(netbird status | grep "Management" | grep "Connected" || true)
+        [ -n "$status" ]
+    else
+        return 1
+    fi
+}
+
+connect_netbird() {
+    log_info "Connecting to NetBird management server..."
+    
+    # Stop any existing connection
+    sudo netbird down &> /dev/null || true
+    
+    # Start new connection
+    if sudo netbird up --management-url "$MANAGEMENT_URL" --setup-key "$SETUP_KEY"; then
+        sleep 5
+        
+        if check_netbird_connected; then
+            log_info "NetBird connected successfully"
+        else
+            log_error "Failed to connect to NetBird management server"
+            exit 1
+        fi
+    else
+        log_error "Failed to execute NetBird up command"
+        exit 1
+    fi
+}
+
+#==========================================
+# NETWORK INTERFACE FUNCTIONS
+#==========================================
+
+wait_for_interface() {
+    local max_attempts=30
+    local attempt=1
+    local ip
+
+    log_info "Waiting for $NETBIRD_INTERFACE interface to be ready..."
+
+    while [ $attempt -le $max_attempts ]; do
+        if ip link show "$NETBIRD_INTERFACE" &> /dev/null; then
+            ip=$(get_interface_ip "$NETBIRD_INTERFACE")
+            if [ -n "$ip" ]; then
+                log_info "Interface $NETBIRD_INTERFACE is ready with IP: $ip"
+                return 0
+            fi
+        fi
+        
+        log_warning "Attempt $attempt/$max_attempts: Waiting for interface..."
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+
+    log_error "Interface $NETBIRD_INTERFACE did not become ready in time"
+    return 1
+}
+
+get_interface_ip() {
+    local interface="$1"
+    ip -4 addr show dev "$interface" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1
+}
+
+#==========================================
+# API REGISTRATION FUNCTIONS
+#==========================================
+
+register_with_api() {
+    log_info "Registering with API..."
+
+    local ip machine_id response http_code body
+    
+    ip=$(get_interface_ip "$NETBIRD_INTERFACE")
+    if [ -z "$ip" ]; then
+        log_error "Could not find IP for interface $NETBIRD_INTERFACE"
+        exit 1
+    fi
+    
+    log_info "Using IP address: $ip"
+    machine_id=$(get_machine_id)
+    
+    # Prepare API request
+    local json_payload
+    json_payload=$(cat <<EOF
+{
+    "machineId": "$machine_id",
+    "arch": "$DETECTED_ARCH",
+    "os": "$DETECTED_OS",
+    "backendHost": "$ip",
+    "services": [
+        "rdrive", "rtransfer", "rdrop", "rpictures",
+        "app", "status",
+        "backend.rdrive", "connector.rdrive", "document.rdrive"
+    ]
+}
+EOF
+)
+
+    # Make API request
+    response=$(curl -s -w "%{http_code}" -o netbird_data -X POST "$API_ENDPOINT" \
+        -H "Content-Type: application/json" \
+        -d "$json_payload")
+
+    http_code="${response: -3}"
+    body=$(cat netbird_data 2>/dev/null || echo "")
+
+    # Handle response
+    if echo "$body" | grep -q '"status":"already_exists"'; then
+        log_info "BackendHost $ip is already registered, skipping registration."
+        return 0
+    fi
+
+    if [ "$http_code" = "200" ] || [ "$http_code" = "201" ]; then
+        log_info "Successfully registered with API"
+        process_api_response
+    else
+        log_error "Failed to register with API (HTTP $http_code)"
+        log_error "Response body saved in: netbird_data"
+        exit 1
+    fi
+}
+
+process_api_response() {
+    local json_file="netbird-data.json"
+    
+    if [ -f "netbird_data" ]; then
+        mv "netbird_data" "$json_file"
+    fi
+
+    if [ -f "$json_file" ]; then
+        log_info "Copying $json_file to $TARGET_DIR"
+        mkdir -p "$TARGET_DIR"
+        if cp "$json_file" "$TARGET_DIR/"; then
+            log_info "Successfully copied $json_file to $TARGET_DIR"
+        else
+            log_warning "Failed to copy $json_file to $TARGET_DIR"
+        fi
+    fi
+}
+
+#==========================================
+# ENVIRONMENT CONFIGURATION FUNCTIONS
+#==========================================
+
+install_jq() {
+    if command_exists jq; then
+        return 0
+    fi
+    
+    log_info "Installing jq..."
+    
+    if command_exists apt; then
+        sudo apt update && sudo apt install -y jq
+    elif command_exists brew; then
+        brew install jq
+    else
+        log_error "Cannot install jq automatically. Please install jq manually."
+        exit 1
+    fi
+}
+
+# Fonction pour générer le fichier .env
+generate_env_file() {
+    local json_file="$HOME/netbird-data.json"
+    local rdrive_path="$HOME/$RDRIVE_DIR"
+    
+    log_info "=== Début de la phase de configuration d'environnement ==="
+    log_info "Génération de la configuration d'environnement..."
+    
+    # Vérifier si le fichier JSON existe dans $HOME
+    if [ ! -f "$json_file" ]; then
+        log_error "netbird-data.json introuvable dans $HOME"
+        exit 1
+    fi
+    
+    # S'assurer que jq est disponible
+    install_jq
+    
+    # S'assurer que le répertoire RDRIVE_DIR existe
+    if [ ! -d "$rdrive_path" ]; then
+        log_warning "$rdrive_path n'existe pas. Création en cours..."
+        mkdir -p "$rdrive_path" || {
+            log_error "Échec de la création du répertoire $rdrive_path"
+            exit 1
+        }
+    fi
+    
+    # Aller d'abord dans le répertoire HOME, puis dans le sous-répertoire spécifique
+    cd "$HOME" || {
+        log_error "Impossible de changer vers le répertoire HOME"
+        exit 1
+    }
+    
+    cd "$RDRIVE_DIR" || {
+        log_error "Impossible de changer vers le répertoire $RDRIVE_DIR"
+        exit 1
+    }
+    
+    log_info "Travail dans le répertoire: $(pwd)"
+    
+    # Extraire les domaines du fichier JSON
+    local rdrive backend_rdrive connector_rdrive document_rdrive
+    
+    rdrive=$(jq -r '.domains.rdrive' "$json_file")
+    backend_rdrive=$(jq -r '.domains."backend.rdrive"' "$json_file")
+    connector_rdrive=$(jq -r '.domains."connector.rdrive"' "$json_file")
+    document_rdrive=$(jq -r '.domains."document.rdrive"' "$json_file")
+    
+    # Valider l'extraction
+    if [ "$rdrive" = "null" ] || [ "$backend_rdrive" = "null" ] || \
+       [ "$connector_rdrive" = "null" ] || [ "$document_rdrive" = "null" ]; then
+        log_error "Impossible d'extraire les domaines de $json_file. Vérifiez la structure JSON."
+        exit 1
+    fi
+    
+    # Générer le fichier .env
+    local env_file=".env"
+    cat > "$env_file" << EOF
+REACT_APP_FRONTEND_URL=https://$rdrive
+REACT_APP_BACKEND_URL=https://$backend_rdrive
+REACT_APP_WEBSOCKET_URL=wss://$backend_rdrive/ws
+REACT_APP_ONLYOFFICE_CONNECTOR_URL=https://$connector_rdrive
+REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=https://$document_rdrive
+EOF
+    
+    log_info "Fichier $env_file généré dans $(pwd)"
+    
+    # Copier vers le répertoire HOME
+    if cp "$env_file" "$HOME/"; then
+        log_info "Fichier $env_file copié vers $HOME"
+    else
+        log_warning "Échec de la copie de $env_file vers $HOME"
+    fi
+    
+    # Retourner au répertoire HOME
+    cd "$HOME"
+    log_info "Configuration d'environnement terminée"
+}
+
+#==========================================
+# VALIDATION FUNCTIONS
+#==========================================
+
+validate_prerequisites() {
+    log_info "Validating prerequisites..."
+    
+    # Check if running as root when needed
+    if ! is_root && ! check_netbird_installed; then
+        log_error "Please run this script as root or with sudo for installation"
+        exit 1
+    fi
+    
+    # Check required directories exist or can be created
+    if [ ! -d "$(dirname "$TARGET_DIR")" ] && ! mkdir -p "$(dirname "$TARGET_DIR")" 2>/dev/null; then
+        log_warning "Cannot create target directory structure: $TARGET_DIR"
+    fi
+    
+    if [ ! -d "$HOME/$(dirname "$RDRIVE_DIR")" ]; then
+        log_warning "RDrive directory structure not found: $HOME/$RDRIVE_DIR"
+    fi
+}
+
+#==========================================
+# MAIN EXECUTION FUNCTIONS
+#==========================================
+
+main_netbird_setup() {
+    log_info "=== Starting NetBird Setup Phase ==="
+    
+    # Install NetBird if needed
+    if ! check_netbird_installed; then
+        log_info "NetBird not found, installing..."
+        install_netbird
+    else
+        log_info "NetBird is already installed"
+    fi
+
+    # Connect NetBird if needed
+    if ! check_netbird_connected; then
+        connect_netbird
+    else
+        log_info "NetBird is already connected"
+    fi
+
+    # Wait for interface to be ready
+    if ! wait_for_interface; then
+        log_error "NetBird interface setup failed"
+        exit 1
+    fi
+
+    # Register with API
+    register_with_api
+    
+    log_info "=== NetBird Setup Phase Completed ==="
+}
+
+main_env_setup() {
+    log_info "=== Starting Environment Configuration Phase ==="
+    
+    generate_env_file
+    
+    log_info "=== Environment Configuration Phase Completed ==="
+}
+
+main() {
+    echo "🚀 Launching NetBird Configuration..."
+    
+    # Store working directory
+    WORKDIR="$PWD"
+    cd "$WORKDIR"
+    
+    # Validate environment
+    validate_prerequisites
+    
+    # Detect system
+    detect_system
+    
+    # Execute main phases
+    main_netbird_setup
+    main_env_setup
+    
+    log_info "🎉 NetBird setup completed successfully!"
+    log_info "All configurations have been generated and services are ready."
+}
+
+#==========================================
+# SCRIPT ENTRY POINT
+#==========================================
+
+# Only run main if script is executed directly (not sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
+
 
 echo ""
 echo "----------------------------------------------------"
@@ -472,7 +920,7 @@ else
 fi
   
   echo "-----------------------------------------------------"
-  echo "Etape 11: Ip du cloud Ryvie ryvie.local"
+  echo "Etape 11: Ip du cloud Ryvie ryvie.local "
   echo "-----------------------------------------------------"
 
 # Installer avahi via la fonction d'installation (compatible Debian)
@@ -941,7 +1389,7 @@ dc -f docker-compose.minimal.yml up -d
 echo "✅ rDrive est lancé."
 
 echo "-----------------------------------------------------"
-echo "Étape 16: Installation et lancement du Back-end-view"
+echo "Étape 16: Installation et lancement du Back-end-view et Front-end"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
@@ -956,28 +1404,7 @@ fi
 # Aller dans le dossier Back-end-view
 cd "Ryvie/Back-end-view" || { echo "❌ Dossier 'Ryvie/Back-end-view' introuvable"; exit 1; }
 
-# Définir les emplacements possibles pour le fichier .env
-POSSIBLE_ENV_PATHS=(
-    "$HOME/Desktop/.env"       # English desktop
-    "$HOME/Bureau/.env"        # French desktop
-    "$HOME/.env"               # Home directory
-    "/root/.env"               # Root home directory
-)
 
-# Chercher un fichier .env existant
-SRC_ENV=""
-for env_path in "${POSSIBLE_ENV_PATHS[@]}"; do
-    if [ -f "$env_path" ]; then
-        SRC_ENV="$env_path"
-        echo "✅ Fichier .env trouvé à: $SRC_ENV"
-        break
-    fi
-done
-
-if [ -f "$SRC_ENV" ]; then
-  echo "📄 Copie de $SRC_ENV vers $(pwd)/.env"
-  cp "$SRC_ENV" .env
-else
   echo "⚠️ Aucun .env trouvé sur Desktop ou Bureau. Création d'un fichier .env par défaut..."
   cat > .env << 'EOL'
 PORT=3002
@@ -1018,7 +1445,6 @@ ENABLE_HELMET=true
 ENABLE_CORS_CREDENTIALS=false
 EOL
   echo "✅ Fichier .env par défaut créé avec succès"
-fi
 
 # Installer PM2 globalement si ce n'est pas déjà fait
 if ! command -v pm2 &> /dev/null; then
@@ -1062,276 +1488,34 @@ echo "   - Arrêter: pm2 stop backend-view"
 echo "   - Redémarrer: pm2 restart backend-view"
 echo "   - Statut: pm2 status"
 
-# Frontend setup with PM2
-FRONTEND_DIR="Ryvie/Ryvie-Front"
-if [ -d "$FRONTEND_DIR" ]; then
-    echo "\n🚀 Configuration du frontend avec PM2..."
-    cd "$FRONTEND_DIR" || { echo "❌ Impossible d'accéder au dossier $FRONTEND_DIR"; exit 1; }
-    
-    # Install frontend dependencies
-    echo "📦 Installation des dépendances du frontend..."
-    npm install || { echo "❌ Échec de l'installation des dépendances du frontend"; exit 1; }
-    
-    # Build the frontend
-    echo "🔨 Construction du frontend..."
-    npm run build || { echo "❌ Échec de la construction du frontend"; exit 1; }
-    
-    # Install serve if not present
-    if ! command -v serve &> /dev/null; then
-        echo "📦 Installation de serve globalement..."
-        sudo npm install -g serve
-    fi
-    
-    # Start frontend with PM2
-    echo "🚀 Démarrage du frontend avec PM2..."
-    pm2 describe frontend > /dev/null 2>&1
-    
-    if [ $? -eq 0 ]; then
-        echo "🔄 Redémarrage du service frontend existant..."
-        pm2 restart frontend --update-env
-    else
-        echo "✨ Création d'un nouveau service PM2 pour le frontend..."
-        pm2 serve build 3000 --spa --name "frontend" --output "../logs/frontend-out.log" --error "../logs/frontend-error.log" --time
-    fi
-    
-    # Save PM2 configuration
-    pm2 save
-    
-    echo "✅ Frontend est géré par PM2"
-    echo "📝 Logs d'accès: $(pwd)/../logs/frontend-out.log"
-    echo "📝 Logs d'erreur: $(pwd)/../logs/frontend-error.log"
-    echo "🌐 Frontend disponible sur: http://localhost:3000"
-    echo "ℹ️ Commandes utiles:"
-    echo "   - Voir les logs: pm2 logs frontend"
-    echo "   - Arrêter: pm2 stop frontend"
-    echo "   - Redémarrer: pm2 restart frontend"
-    
-    # Return to original directory
-    cd - > /dev/null
+# Frontend setup
+echo "🚀 Setting up frontend..."
+cd "$HOME/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
+
+echo "📦 Installing frontend dependencies..."
+npm install || { echo "❌ npm install failed"; exit 1; }
+
+echo "🚀 Starting frontend with PM2..."
+pm2 describe ryvie-frontend > /dev/null 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "🔄 Restarting existing ryvie-frontend service..."
+    pm2 restart ryvie-frontend --update-env
 else
-    echo "\n⚠️ Dossier du frontend non trouvé: $FRONTEND_DIR"
-    echo "   Le frontend ne sera pas démarré automatiquement."
+    echo "✨ Creating new PM2 service for ryvie-frontend..."
+    pm2 start "npm run dev" --name "ryvie-frontend" --output "$HOME/Ryvie/Ryvie-Front/logs/frontend-out.log" --error "$HOME/Ryvie/Ryvie-Front/logs/frontend-error.log" --time
 fi
 
-# NetBird Configuration
-(
-    echo "🚀 Lancement de la configuration NetBird..."
-    cd "$WORKDIR"
-    
-    # NetBird Configuration
-    MANAGEMENT_URL="https://netbird.migrate.fr"
-    SETUP_KEY="8B66987F-28A4-4DB0-8A19-65739C7ADD26"
-    API_ENDPOINT="http://netbird.migrate.fr:8088/api/register"
-    NETBIRD_INTERFACE="wt0"
+# Create logs directory if it doesn't exist
+mkdir -p logs
 
-    # Colors for output
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[1;33m'
-    NC='\033[0m' # No Color
+# Save PM2 configuration
+pm2 save
 
-    # Function to print colored messages
-    log_info() {
-        echo -e "${GREEN}[INFO]${NC} $1"
-    }
-
-    log_error() {
-        echo -e "${RED}[ERROR]${NC} $1"
-    }
-
-    log_warning() {
-        echo -e "${YELLOW}[WARNING]${NC} $1"
-    }
-
-    # Function to check if NetBird is installed
-    check_netbird_installed() {
-        if command -v netbird &> /dev/null; then
-            return 0
-        else
-            return 1
-        fi
-    }
-
-    # Function to detect OS and architecture
-    detect_system() {
-        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-        ARCH=$(uname -m)
-
-        case $ARCH in
-            x86_64)
-                ARCH="amd64"
-                ;;
-            aarch64|arm64)
-                ARCH="arm64"
-                ;;
-            armv7l)
-                ARCH="armv7"
-                ;;
-            *)
-                log_error "Unsupported architecture: $ARCH"
-                exit 1
-                ;;
-        esac
-
-        log_info "Detected system: $OS/$ARCH"
-    }
-
-    # Simplified NetBird installation using official script
-    install_netbird() {
-        log_info "Installing NetBird using official install script..."
-
-        if curl -fsSL https://pkgs.netbird.io/install.sh | sh; then
-            log_info "NetBird installed successfully"
-        else
-            log_error "NetBird installation failed"
-            exit 1
-        fi
-    }
-
-    # Function to check if NetBird is connected
-    check_netbird_connected() {
-        if netbird status &> /dev/null; then
-            STATUS=$(netbird status | grep "Management" | grep "Connected")
-            if [ -n "$STATUS" ]; then
-                return 0
-            fi
-        fi
-        return 1
-    }
-
-    # Function to connect NetBird
-    connect_netbird() {
-        log_info "Connecting to NetBird management server..."
-        sudo netbird down &> /dev/null
-        sudo netbird up --management-url "$MANAGEMENT_URL" --setup-key "$SETUP_KEY"
-        sleep 5
-
-        if check_netbird_connected; then
-            log_info "NetBird connected successfully"
-        else
-            log_error "Failed to connect to NetBird management server"
-            exit 1
-        fi
-    }
-
-    # Function to wait for interface to be ready
-    wait_for_interface() {
-        local max_attempts=30
-        local attempt=1
-
-        log_info "Waiting for $NETBIRD_INTERFACE interface to be ready..."
-
-        while [ $attempt -le $max_attempts ]; do
-            if ip link show "$NETBIRD_INTERFACE" &> /dev/null; then
-                IP=$(ip -4 addr show dev "$NETBIRD_INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
-                if [ -n "$IP" ]; then
-                    log_info "Interface $NETBIRD_INTERFACE is ready with IP: $IP"
-                    return 0
-                fi
-            fi
-            log_warning "Attempt $attempt/$max_attempts: Waiting for interface..."
-            sleep 2
-            attempt=$((attempt + 1))
-        done
-
-        log_error "Interface $NETBIRD_INTERFACE did not become ready in time"
-        return 1
-    }
-
-    # Function to register with API
-    register_with_api() {
-        log_info "Registering with API..."
-
-        IP=$(ip -4 addr show dev "$NETBIRD_INTERFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
-
-        if [ -z "$IP" ]; then
-            log_error "Could not find IP for interface $NETBIRD_INTERFACE"
-            exit 1
-        fi
-
-        log_info "Using IP address: $IP"
-        detect_system
-
-        if [ -f /etc/machine-id ]; then
-            MACHINE_ID=$(cat /etc/machine-id)
-        else
-            MACHINE_ID=$(uuidgen || echo "$(hostname)-$(date +%s)")
-        fi
-
-        # Save response body to netbird_data and capture HTTP status code
-        HTTP_CODE=$(curl -s -w "%{http_code}" -o netbird_data -X POST "$API_ENDPOINT" \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"machineId\": \"$MACHINE_ID\",
-                \"arch\": \"$ARCH\",
-                \"os\": \"$OS\",
-                \"backendHost\": \"$IP\",
-                \"services\": [
-                    \"rdrive\", \"rtransfer\", \"rdrop\", \"rpictures\",
-                    \"app\", \"status\",
-                    \"backend.rdrive\", \"connector.rdrive\", \"document.rdrive\"
-                ]
-            }")
-
-        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-            log_info "Successfully registered with API"
-            
-            # Copy netbird-data.json to Ryvie frontend config
-            TARGET_DIR="Ryvie/Ryvie-Front/src/config"
-            JSON_FILE="netbird-data.json"
-            
-            # Rename netbird_data to netbird-data.json if it exists
-            if [ -f "netbird_data" ]; then
-                mv "netbird_data" "$JSON_FILE"
-            fi
-            
-            if [ -f "$JSON_FILE" ]; then
-                log_info "Copying $JSON_FILE to $TARGET_DIR"
-                mkdir -p "$TARGET_DIR"
-                if cp "$JSON_FILE" "$TARGET_DIR/"; then
-                    log_info "Successfully copied $JSON_FILE to $TARGET_DIR"
-                else
-                    log_warning "Failed to copy $JSON_FILE to $TARGET_DIR"
-                fi
-            else
-                log_warning "$JSON_FILE file not found, skipping copy to $TARGET_DIR"
-            fi
-        else
-            log_error "Failed to register with API (HTTP $HTTP_CODE)"
-            if [ -f "netbird_data" ]; then
-                log_error "See response body in: netbird_data"
-            fi
-            exit 1
-        fi
-    }
-
-    # Main execution
-    log_info "Starting NetBird setup and registration"
-
-    if [ "$EUID" -ne 0 ] && ! check_netbird_installed; then
-        log_error "Please run this script as root or with sudo for installation"
-        exit 1
-    fi
-
-    if ! check_netbird_installed; then
-        log_info "NetBird not found, installing..."
-        install_netbird
-    else
-        log_info "NetBird is already installed"
-    fi
-
-    if ! check_netbird_connected; then
-        connect_netbird
-    else
-        log_info "NetBird is already connected"
-    fi
-
-    if ! wait_for_interface; then
-        exit 1
-    fi
-
-    register_with_api
-    log_info "NetBird setup completed successfully!"
-) &
-
-newgrp docker
+echo "✅ Frontend is now managed by PM2"
+echo "📝 Frontend logs: $HOME/Ryvie/Ryvie-Front/logs/frontend-*.log"
+echo "ℹ️ Useful commands:"
+echo "   - View logs: pm2 logs ryvie-frontend"
+echo "   - Stop: pm2 stop ryvie-frontend"
+echo "   - Restart: pm2 restart ryvie-frontend"
+echo "   - Status: pm2 status"
