@@ -1519,3 +1519,5 @@ echo "   - View logs: pm2 logs ryvie-frontend"
 echo "   - Stop: pm2 stop ryvie-frontend"
 echo "   - Restart: pm2 restart ryvie-frontend"
 echo "   - Status: pm2 status"
+
+newgrp docker
