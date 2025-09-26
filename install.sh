@@ -40,16 +40,32 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 ID="${ID:-}"
 VERSION_ID="${VERSION_ID:-}"
 
-# helper: retourne Desktop/Bureau ou HOME si introuvable
-get_desktop_dir() {
-    local d="$HOME/Bureau"
-    if [ ! -d "$d" ]; then
-        d="$HOME/Desktop"
-    fi
-    if [ ! -d "$d" ]; then
-        d="$HOME"
-    fi
-    printf '%s' "$d"
+# =====================================================
+# Global /data paths (strict OS/Data separation)
+# =====================================================
+DATA_ROOT="/data"
+APPS_DIR="$DATA_ROOT/apps"
+CONFIG_DIR="$DATA_ROOT/config"
+LOG_DIR="$DATA_ROOT/logs"
+DOCKER_ROOT="$DATA_ROOT/docker"
+PM2_HOME_DIR="$DATA_ROOT/pm2"
+sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR"
+# Donner la main à l'utilisateur sur les répertoires non système
+sudo chown -R "$USER:$USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" || true
+
+# PM2 directory and export (idempotent)
+export PM2_HOME="$PM2_HOME_DIR"
+echo 'export PM2_HOME="/data/pm2"' | sudo tee -a /etc/profile.d/ryvie_pm2.sh >/dev/null
+
+# rclone configuration path under /data/config
+export RCLONE_CONFIG="$CONFIG_DIR/rclone/rclone.conf"
+sudo mkdir -p "$(dirname "$RCLONE_CONFIG")"
+sudo touch "$RCLONE_CONFIG" || true
+sudo chmod 600 "$RCLONE_CONFIG" || true
+
+# helper: retourne le répertoire de travail des apps (path-only)
+get_work_dir() {
+    printf '%s' "$APPS_DIR"
 }
 
 # =====================================================
@@ -149,6 +165,22 @@ else
     install_pkgs curl || { echo "❌ Échec de l'installation de curl"; exit 1; }
 fi
 
+# Vérifier et installer jq si nécessaire (utilisé plus loin dans le script)
+if command -v jq > /dev/null 2>&1; then
+    echo "✅ jq est déjà installé : $(jq --version)"
+else
+    echo "⚙️ Installation de jq..."
+    install_pkgs jq || { echo "❌ Échec de l'installation de jq"; exit 1; }
+fi
+
+# Vérifier et installer rsync si nécessaire (utilisé pour les migrations de données)
+if command -v rsync > /dev/null 2>&1; then
+    echo "✅ rsync est déjà installé : $(rsync --version | head -n1)"
+else
+    echo "⚙️ Installation de rsync..."
+    install_pkgs rsync || { echo "❌ Échec de l'installation de rsync"; exit 1; }
+fi
+
 # 3. Vérification de la mémoire physique (minimum 400 MB)
 MEMORY=$(free -m | awk '/Mem:/ {print $2}')
 MIN_MEMORY=400
@@ -183,13 +215,14 @@ REPOS=(
     "Ryvie"
 )
 
-
-# Demander la branche à cloner
-read -p "Quelle branche veux-tu cloner ? " BRANCH
-if [[ -z "$BRANCH" ]]; then
-    echo "❌ Branche invalide. Annulation."
-    exit 1
+# Branche à cloner: interroge si RYVIE_BRANCH n'est pas défini
+if [ -z "${RYVIE_BRANCH:-}" ]; then
+    read -p "Quelle branche veux-tu cloner ? [main]: " BRANCH_INPUT
+    BRANCH="${BRANCH_INPUT:-main}"
+else
+    BRANCH="$RYVIE_BRANCH"
 fi
+echo "Branche sélectionnée: $BRANCH"
 
 # Fonction de vérification des identifiants
 verify_credentials() {
@@ -201,30 +234,23 @@ verify_credentials() {
     [[ "$status_code" == "200" ]]
 }
 
-# Demander les identifiants GitHub s'ils ne sont pas valides
-while true; do
-    if [[ -z "$GITHUB_USER" ]]; then
-        read -p "Entrez votre nom d'utilisateur GitHub : " GITHUB_USER
-    fi
+# Identifiants GitHub: interroge si non fournis via env
+if [ -z "${GITHUB_USER:-}" ]; then
+    read -p "Entrez votre nom d'utilisateur GitHub : " GITHUB_USER
+fi
+if [ -z "${GITHUB_TOKEN:-}" ]; then
+    read -s -p "Entrez votre token GitHub personnel : " GITHUB_TOKEN
+    echo
+fi
+if verify_credentials "$GITHUB_USER" "$GITHUB_TOKEN"; then
+    echo "✅ Authentification GitHub réussie."
+else
+    echo "❌ Authentification GitHub échouée."
+    exit 1
+fi
 
-    if [[ -z "$GITHUB_TOKEN" ]]; then
-        read -s -p "Entrez votre token GitHub personnel : " GITHUB_TOKEN
-        echo
-    fi
-
-    if verify_credentials "$GITHUB_USER" "$GITHUB_TOKEN"; then
-        echo "✅ Authentification GitHub réussie."
-        break
-    else
-        echo "❌ Authentification échouée. Veuillez réessayer."
-        unset GITHUB_USER
-        unset GITHUB_TOKEN
-    fi
-done
-
-# Déterminer le répertoire de travail de façon robuste (Bureau/Desktop/Home)
-WORKDIR="$(get_desktop_dir)"
-cd "$WORKDIR" || { echo "❌ Impossible d'accéder à $WORKDIR"; exit 1; }
+# Se positionner dans le répertoire des applications
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
 
 CREATED_DIRS=()
 
@@ -239,12 +265,14 @@ for repo in "${REPOS[@]}"; do
         log "📥 Clonage du dépôt $repo (branche $BRANCH)..."
         git clone --branch "$BRANCH" "$repo_url" "$repo"
         if [[ $? -eq 0 ]]; then
-            CREATED_DIRS+=("$WORKDIR/$repo")
+            CREATED_DIRS+=("$APPS_DIR/$repo")
         else
             log "❌ Échec du clonage du dépôt : $repo"
         fi
     else
         log "✅ Dépôt déjà cloné: $repo"
+        # Optionnel: tenter un pull sans échec bloquant
+        (cd "$repo" && git pull --ff-only) || true
     fi
 done
 
@@ -328,6 +356,12 @@ echo "----------------------------------------------------"
 strict_enter
 if command -v docker > /dev/null 2>&1; then
     echo "Docker est déjà installé : $(docker --version)"
+    # Forcer data-root Docker vers $DOCKER_ROOT (merge non destructif)
+    sudo mkdir -p "$DOCKER_ROOT"
+    sudo bash -c 'jq -s ".[0] * {\"data-root\": env.DOCKER_ROOT}" /etc/docker/daemon.json 2>/dev/null || echo "{\"data-root\":\"'"$DOCKER_ROOT"'\"}"' \
+      | sudo tee /etc/docker/daemon.json >/dev/null
+    sudo systemctl daemon-reload
+    sudo systemctl restart docker || true
     echo "Vérification de Docker en exécutant 'docker run hello-world'..."
     sudo docker run hello-world
     if [ $? -eq 0 ]; then
@@ -368,8 +402,14 @@ else
         fi
     fi
 
-    ### ✅ 6. Vérifier que Docker fonctionne
+    ### ✅ 6. Configurer data-root et vérifier que Docker fonctionne
     if command -v docker > /dev/null 2>&1; then
+        # Forcer data-root Docker vers $DOCKER_ROOT (merge non destructif)
+        sudo mkdir -p "$DOCKER_ROOT"
+        sudo bash -c 'jq -s ".[0] * {\"data-root\": env.DOCKER_ROOT}" /etc/docker/daemon.json 2>/dev/null || echo "{\"data-root\":\"'"$DOCKER_ROOT"'\"}"' \
+          | sudo tee /etc/docker/daemon.json >/dev/null
+        sudo systemctl daemon-reload
+        sudo systemctl restart docker || true
         echo "Vérification de Docker en exécutant 'docker run hello-world'..."
         sudo docker run --rm hello-world || echo "⚠️ 'docker run hello-world' a échoué."
         echo "Docker a été installé et fonctionne (ou tenté)."
@@ -382,7 +422,6 @@ echo ""
 echo "----------------------------------------------------"
 echo "Étape 5: Installation et Configuration de NetBird "
 echo "----------------------------------------------------"
-#!/bin/bash
 
 #==========================================
 # NetBird Configuration and Setup Script
@@ -403,6 +442,14 @@ readonly API_ENDPOINT="http://netbird.ryvie.ovh:8088/api/register"
 readonly NETBIRD_INTERFACE="wt0"
 readonly TARGET_DIR="Ryvie/Ryvie-Front/src/config"
 RDRIVE_DIR="Ryvie-rDrive/tdrive"
+
+# Persistance NetBird sous $DATA_ROOT/netbird (idempotent)
+sudo systemctl stop netbird || true
+sudo mkdir -p "$DATA_ROOT/netbird"
+sudo rsync -a /var/lib/netbird/ "$DATA_ROOT/netbird/" || true
+sudo rm -rf /var/lib/netbird
+sudo ln -s "$DATA_ROOT/netbird" /var/lib/netbird
+sudo systemctl start netbird || true
 
 #==========================================
 # COLORS FOR OUTPUT
@@ -483,6 +530,8 @@ install_netbird() {
     
     if curl -fsSL https://pkgs.netbird.io/install.sh | sh; then
         log_info "NetBird installed successfully"
+        # S'assurer que le service est activé et démarré
+        sudo systemctl enable --now netbird 2>/dev/null || true
     else
         log_error "NetBird installation failed"
         exit 1
@@ -502,23 +551,42 @@ check_netbird_connected() {
 connect_netbird() {
     log_info "Connecting to NetBird management server..."
     
+    # S'assurer que le service est actif
+    sudo systemctl enable --now netbird 2>/dev/null || true
+
+    # Diagnostic de connectivité Management/API (best-effort)
+    if command -v curl >/dev/null 2>&1; then
+        http_mgmt=$(curl -s -o /dev/null -w "%{http_code}" "$MANAGEMENT_URL" || echo "000")
+        http_api=$(curl -s -o /dev/null -w "%{http_code}" "$API_ENDPOINT" || echo "000")
+        log_info "Connectivity check: MANAGEMENT_URL=$http_mgmt API_ENDPOINT=$http_api"
+    fi
+
     # Stop any existing connection
     sudo netbird down &> /dev/null || true
     
-    # Start new connection
-    if sudo netbird up --management-url "$MANAGEMENT_URL" --setup-key "$SETUP_KEY"; then
-        sleep 5
-        
-        if check_netbird_connected; then
-            log_info "NetBird connected successfully"
-        else
-            log_error "Failed to connect to NetBird management server"
-            exit 1
+    # Try multiple times to bring up the connection
+    local attempts=5
+    local delay=5
+    local i=1
+    while [ $i -le $attempts ]; do
+        log_info "netbird up attempt $i/$attempts..."
+        if sudo netbird up --management-url "$MANAGEMENT_URL" --setup-key "$SETUP_KEY"; then
+            sleep 5
+            if check_netbird_connected; then
+                log_info "NetBird connected successfully"
+                return 0
+            fi
         fi
-    else
-        log_error "Failed to execute NetBird up command"
-        exit 1
-    fi
+        log_warning "NetBird up failed or not connected yet. Retrying in ${delay}s..."
+        sleep $delay
+        i=$((i+1))
+    done
+
+    # Diagnostics avant abandon
+    log_error "Failed to connect to NetBird after ${attempts} attempts"
+    sudo systemctl status netbird --no-pager -l 2>/dev/null | tail -n 50 || true
+    sudo journalctl -u netbird --no-pager -n 100 2>/dev/null || true
+    exit 1
 }
 
 #==========================================
@@ -590,13 +658,15 @@ register_with_api() {
 EOF
 )
 
-    # Make API request
-    response=$(curl -s -w "%{http_code}" -o netbird_data -X POST "$API_ENDPOINT" \
+    # Make API request (sauvegarde sous /data/config/netbird)
+    mkdir -p "$CONFIG_DIR/netbird"
+    local netbird_tmp="$CONFIG_DIR/netbird/netbird_data"
+    response=$(curl -s -w "%{http_code}" -o "$netbird_tmp" -X POST "$API_ENDPOINT" \
         -H "Content-Type: application/json" \
         -d "$json_payload")
 
     http_code="${response: -3}"
-    body=$(cat netbird_data 2>/dev/null || echo "")
+    body=$(cat "$netbird_tmp" 2>/dev/null || echo "")
 
     # Handle response
     if echo "$body" | grep -q '"status":"already_exists"'; then
@@ -609,25 +679,28 @@ EOF
         process_api_response
     else
         log_error "Failed to register with API (HTTP $http_code)"
-        log_error "Response body saved in: netbird_data"
+        log_error "Response body saved in: $netbird_tmp"
         exit 1
     fi
 }
 
 process_api_response() {
-    local json_file="netbird-data.json"
-    
-    if [ -f "netbird_data" ]; then
-        mv "netbird_data" "$json_file"
+    local netbird_cfg_dir="$CONFIG_DIR/netbird"
+    local json_file="$netbird_cfg_dir/netbird-data.json"
+    local netbird_tmp="$netbird_cfg_dir/netbird_data"
+
+    mkdir -p "$netbird_cfg_dir"
+    if [ -f "$netbird_tmp" ]; then
+        mv "$netbird_tmp" "$json_file"
     fi
 
     if [ -f "$json_file" ]; then
-        log_info "Copying $json_file to $TARGET_DIR"
+        log_info "Copying $(basename "$json_file") to $TARGET_DIR"
         mkdir -p "$TARGET_DIR"
         if cp "$json_file" "$TARGET_DIR/"; then
-            log_info "Successfully copied $json_file to $TARGET_DIR"
+            log_info "Successfully copied $(basename "$json_file") to $TARGET_DIR"
         else
-            log_warning "Failed to copy $json_file to $TARGET_DIR"
+            log_warning "Failed to copy $(basename "$json_file") to $TARGET_DIR"
         fi
     fi
 }
@@ -655,15 +728,15 @@ install_jq() {
 
 # Fonction pour générer le fichier .env
 generate_env_file() {
-    local json_file="$HOME/netbird-data.json"
-    local rdrive_path="$HOME/$RDRIVE_DIR"
+    local json_file="$CONFIG_DIR/netbird/netbird-data.json"
+    local rdrive_path="$APPS_DIR/$RDRIVE_DIR"
     
     log_info "=== Début de la phase de configuration d'environnement ==="
     log_info "Génération de la configuration d'environnement..."
     
-    # Vérifier si le fichier JSON existe dans $HOME
+    # Vérifier si le fichier JSON existe dans /data/config/netbird
     if [ ! -f "$json_file" ]; then
-        log_error "netbird-data.json introuvable dans $HOME"
+        log_error "netbird-data.json introuvable dans $CONFIG_DIR/netbird"
         exit 1
     fi
     
@@ -679,13 +752,8 @@ generate_env_file() {
         }
     fi
     
-    # Aller d'abord dans le répertoire HOME, puis dans le sous-répertoire spécifique
-    cd "$HOME" || {
-        log_error "Impossible de changer vers le répertoire HOME"
-        exit 1
-    }
-    
-    cd "$RDRIVE_DIR" || {
+    # Aller dans le répertoire de l'app rDrive sous /data/apps
+    cd "$rdrive_path" || {
         log_error "Impossible de changer vers le répertoire $RDRIVE_DIR"
         exit 1
     }
@@ -708,7 +776,8 @@ generate_env_file() {
     fi
     
     # Générer le fichier .env
-    local env_file=".env"
+    mkdir -p "$CONFIG_DIR/rdrive"
+    local env_file="$CONFIG_DIR/rdrive/.env"
     cat > "$env_file" << EOF
 REACT_APP_FRONTEND_URL=https://$rdrive
 REACT_APP_BACKEND_URL=https://$backend_rdrive
@@ -717,20 +786,20 @@ REACT_APP_ONLYOFFICE_CONNECTOR_URL=https://$connector_rdrive
 REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=https://$document_rdrive
 EOF
     
-    log_info "Fichier $env_file généré dans $(pwd)"
-    
-    # Copier vers le répertoire HOME
-    if cp "$env_file" "$HOME/"; then
-        log_info "Fichier $env_file copié vers $HOME"
-    else
-        log_warning "Échec de la copie de $env_file vers $HOME"
-    fi
-    
-    # Retourner au répertoire HOME
-    cd "$HOME"
+    log_info "Fichier $env_file généré"
     log_info "Configuration d'environnement terminée"
 }
+# --- Déployer le .env côté tdrive (remplace l'existant) ---
+# Source déjà générée : $env_file = /data/config/rdrive/.env
+local tdrive_env="$APPS_DIR/$RDRIVE_DIR/.env"   # /data/apps/Ryvie-rDrive/tdrive/.env
 
+# Copie et droits
+mkdir -p "$(dirname "$tdrive_env")"
+cp -f "$env_file" "$tdrive_env"
+chmod 600 "$tdrive_env" || true
+chown "$USER:$USER" "$tdrive_env" 2>/dev/null || true
+
+log_info "Nouveau .env déployé → $tdrive_env"
 #==========================================
 # VALIDATION FUNCTIONS
 #==========================================
@@ -749,8 +818,8 @@ validate_prerequisites() {
         log_warning "Cannot create target directory structure: $TARGET_DIR"
     fi
     
-    if [ ! -d "$HOME/$(dirname "$RDRIVE_DIR")" ]; then
-        log_warning "RDrive directory structure not found: $HOME/$RDRIVE_DIR"
+    if [ ! -d "$APPS_DIR/$(dirname "$RDRIVE_DIR")" ]; then
+        log_warning "RDrive directory structure not found: $APPS_DIR/$RDRIVE_DIR"
     fi
 }
 
@@ -799,9 +868,8 @@ main_env_setup() {
 main() {
     echo "🚀 Launching NetBird Configuration..."
     
-    # Store working directory
-    WORKDIR="$PWD"
-    cd "$WORKDIR"
+    # Use APPS_DIR as canonical apps root
+    cd "$APPS_DIR" || { log_error "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
     
     # Validate environment
     validate_prerequisites
@@ -844,6 +912,23 @@ else
     fi
     # Activer et démarrer Redis
     sudo systemctl enable --now redis-server
+fi
+
+# Déplacer les données Redis sous $DATA_ROOT/redis (idempotent)
+if [ -d /var/lib/redis ] || [ -f /etc/redis/redis.conf ]; then
+    echo "📦 Migration des données Redis vers $DATA_ROOT/redis..."
+    sudo systemctl stop redis-server || true
+    sudo mkdir -p "$DATA_ROOT/redis"
+    sudo rsync -a /var/lib/redis/ "$DATA_ROOT/redis/" || true
+    # Mettre à jour le répertoire de données dans redis.conf (préserver autres réglages)
+    if [ -f /etc/redis/redis.conf ]; then
+        if grep -q '^dir ' /etc/redis/redis.conf; then
+            sudo sed -i "s#^dir .*#dir $DATA_ROOT/redis#" /etc/redis/redis.conf
+        else
+            echo "dir $DATA_ROOT/redis" | sudo tee -a /etc/redis/redis.conf >/dev/null
+        fi
+    fi
+    sudo systemctl start redis-server || true
 fi
 
 # Vérifier l'état du service Redis
@@ -894,20 +979,16 @@ echo ""
   
 # Si Docker absent, sauter Portainer
 if command -v docker > /dev/null 2>&1; then
-  # Créer le volume Portainer s'il n'existe pas
-  if ! sudo docker volume ls -q | grep -q '^portainer_data$'; then
-    sudo docker volume create portainer_data
-  fi
-  
   # Lancer Portainer uniquement s'il n'existe pas déjà
   if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^portainer$'; then
+    sudo mkdir -p "$DATA_ROOT/portainer"
     sudo docker run -d \
       --name portainer \
       --restart=always \
       -p 8000:8000 \
       -p 9443:9443 \
       -v /var/run/docker.sock:/var/run/docker.sock \
-      -v portainer_data:/data \
+      -v "$DATA_ROOT/portainer":/data \
       portainer/portainer-ce:latest
   else
     echo "Portainer existe déjà. Vérification de l'état..."
@@ -933,9 +1014,8 @@ echo ""
 echo "Etape 12: Configuration d'OpenLDAP avec Docker Compose"
 echo "-----------------------------------------------------"
 
-# 1. Créer le dossier ldap sur Desktop/Bureau/Home et s'y positionner
-LDAP_DIR="$(get_desktop_dir)"
-sudo docker network prune -f
+# 1. Créer le dossier ldap sous /data/apps et s'y positionner
+LDAP_DIR="$(get_work_dir)"
 mkdir -p "$LDAP_DIR/ldap"
 cd "$LDAP_DIR/ldap"
 
@@ -1121,9 +1201,9 @@ echo ""
 echo "-----------------------------------------------------"
 echo "Étape 10: Installation de Ryvie rPictures et synchronisation LDAP"
 echo "-----------------------------------------------------"
-# 1. Aller sur le Bureau ou Desktop (WORKDIR déjà initialisé plus haut)
-echo "📁 Dossier sélectionné : $WORKDIR"
-cd "$WORKDIR" || { echo "❌ Impossible d'accéder à $WORKDIR"; exit 1; }
+# 1. Se placer dans le dossier des applications (APPS_DIR défini en haut)
+echo "📁 Dossier sélectionné : $APPS_DIR"
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
 
 # 2. Cloner le dépôt si pas déjà présent
 if [ -d "Ryvie-rPictures" ]; then
@@ -1139,7 +1219,7 @@ fi
 
 
 # 3. Se placer dans le dossier docker
-cd Ryvie-rPictures/docker
+cd "$APPS_DIR/Ryvie-rPictures/docker"
 
 # 4. Créer le fichier .env avec les variables nécessaires
 echo "📝 Création du fichier .env..."
@@ -1168,7 +1248,7 @@ EOF
 echo "✅ Fichier .env créé."
 
 # 5. Lancer les services Immich en mode production
-echo "🚀 Lancement de Immich (rPictures) avec Docker Compose..."
+echo "🚀 Lancement de rPictures avec Docker Compose..."
 sudo docker compose -f docker-compose.ryvie.yml up -d
 
 # 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
@@ -1189,14 +1269,33 @@ if [ "$RESPONSE" -eq 200 ]; then
 else
     echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
 fi
+
+# 7. Synchroniser les utilisateurs LDAP
+echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
+
+if [ "$RESPONSE" -eq 200 ]; then
+    echo "✅ Synchronisation LDAP réussie avec rPictures."
+else
+    echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
+fi
+
+# 7. Synchroniser les utilisateurs LDAP
+echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
+
+if [ "$RESPONSE" -eq 200 ]; then
+    echo "✅ Synchronisation LDAP réussie avec rPictures."
+else
+    echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
+fi
 echo ""
 echo "-----------------------------------------------------"
 echo "Étape 11: Installation de Ryvie rTransfer et synchronisation LDAP"
 echo "-----------------------------------------------------"
 
-# Aller dans le dossier Desktop/Bureau/Home (fallback centralisé)
-BASE_DIR="$(get_desktop_dir)"
-cd "$BASE_DIR" || { echo "❌ Impossible d'accéder à $BASE_DIR"; exit 1; }
+# Aller dans le dossier de travail /data/apps
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
 
 # 1. Cloner le dépôt si pas déjà présent
 if [ -d "Ryvie-rTransfer" ]; then
@@ -1230,7 +1329,7 @@ echo "-----------------------------------------------------"
 echo "Étape 12: Installation de Ryvie rDrop"
 echo "-----------------------------------------------------"
 
-cd "$WORKDIR"
+cd "$APPS_DIR"
 
 if [ -d "Ryvie-rdrop" ]; then
     echo "✅ Le dépôt Ryvie-rdrop existe déjà."
@@ -1255,9 +1354,8 @@ else
     exit 1
 fi
 
-echo "📦 Suppression des conteneurs orphelins et anciens réseaux..."
+echo "📦 Suppression des conteneurs orphelins..."
 sudo docker compose down --remove-orphans
-sudo docker network prune -f
 sudo docker compose up -d
 
 echo ""
@@ -1281,17 +1379,23 @@ command -v rclone && ls -l /usr/bin/rclone || {
 # Version pour confirmation
 rclone version || true
 
-# Préparation du fichier de config (root)
-sudo mkdir -p /root/.config/rclone
-sudo touch /root/.config/rclone/rclone.conf
+# Rclone – config centralisée sous /data/config/rclone
+mkdir -p "$CONFIG_DIR/rclone"
+touch "$CONFIG_DIR/rclone/rclone.conf"
+chmod 600 "$CONFIG_DIR/rclone/rclone.conf"
+sudo chown root:root "$CONFIG_DIR/rclone/rclone.conf" || true
 
-# Permissions strictes
-sudo chown -R root:root /root/.config/rclone
-sudo chmod 700 /root/.config/rclone
-sudo chmod 600 /root/.config/rclone/rclone.conf
+# Option pratique (host uniquement) : symlink facultatif pour compatibilité
+sudo mkdir -p /root/.config
+if [ ! -L /root/.config/rclone ]; then
+  sudo rm -rf /root/.config/rclone 2>/dev/null || true
+  sudo ln -s "$CONFIG_DIR/rclone" /root/.config/rclone
+fi
 
-# Vérification du chemin utilisé par rclone (root)
-sudo rclone config file
+# Export pour les sessions shell (host)
+export RCLONE_CONFIG="$CONFIG_DIR/rclone/rclone.conf"
+grep -q 'RCLONE_CONFIG=' /etc/profile.d/ryvie_rclone.sh 2>/dev/null || \
+  echo 'export RCLONE_CONFIG=/data/config/rclone/rclone.conf' | sudo tee /etc/profile.d/ryvie_rclone.sh >/dev/null
 
 echo ""
 echo "-----------------------------------------------------"
@@ -1309,10 +1413,10 @@ if [ -d "$SCRIPT_DIR/Ryvie-rDrive/tdrive" ]; then
 elif [ -d "$SCRIPT_DIR/tdrive" ]; then
   # cas où le script est lancé depuis le repo Ryvie-rDrive
   RDRIVE_DIR="$SCRIPT_DIR/tdrive"
-elif [ -n "${WORKDIR:-}" ] && [ -d "$WORKDIR/Ryvie-rDrive/tdrive" ]; then
-  RDRIVE_DIR="$WORKDIR/Ryvie-rDrive/tdrive"
+elif [ -d "$APPS_DIR/Ryvie-rDrive/tdrive" ]; then
+  RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
 else
-  echo "❌ Impossible de trouver le dossier 'tdrive' (cherché depuis $SCRIPT_DIR et \$WORKDIR)."
+  echo "❌ Impossible de trouver le dossier 'tdrive' (cherché depuis $SCRIPT_DIR et $APPS_DIR)."
   exit 1
 fi
 
@@ -1393,11 +1497,11 @@ echo "Étape 15: Installation et lancement du Back-end-view et Front-end"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
-cd "$WORKDIR" || { echo "❌ WORKDIR introuvable: $WORKDIR"; exit 1; }
+cd "$APPS_DIR" || { echo "❌ APPS_DIR introuvable: $APPS_DIR"; exit 1; }
 
 # Vérifier la présence du dépôt Ryvie
 if [ ! -d "Ryvie" ]; then
-    echo "❌ Le dépôt 'Ryvie' est introuvable dans $WORKDIR. Assurez-vous qu'il a été cloné plus haut."
+    echo "❌ Le dépôt 'Ryvie' est introuvable dans $APPS_DIR. Assurez-vous qu'il a été cloné plus haut."
     exit 1
 fi
 
@@ -1405,8 +1509,9 @@ fi
 cd "Ryvie/Back-end-view" || { echo "❌ Dossier 'Ryvie/Back-end-view' introuvable"; exit 1; }
 
 
-  echo "⚠️ Aucun .env trouvé sur Desktop ou Bureau. Création d'un fichier .env par défaut..."
-  cat > .env << 'EOL'
+  echo "⚠️ Aucun .env trouvé. Création d'un fichier .env par défaut sous $CONFIG_DIR/backend-view et symlink local..."
+  mkdir -p "$CONFIG_DIR/backend-view"
+  cat > "$CONFIG_DIR/backend-view/.env" << 'EOL'
 PORT=3002
 REDIS_URL=redis://127.0.0.1:6379
 ENCRYPTION_KEY=cQO6ti5443SHwT0+ERK61fAkse/F33cTIfHqDfskOZE=
@@ -1444,7 +1549,9 @@ FORCE_HTTPS=false
 ENABLE_HELMET=true
 ENABLE_CORS_CREDENTIALS=false
 EOL
-  echo "✅ Fichier .env par défaut créé avec succès"
+  # Créer un symlink local .env vers /data/config pour compatibilité
+  ln -sf "$CONFIG_DIR/backend-view/.env" .env
+  echo "✅ Fichier .env par défaut créé et lié: $CONFIG_DIR/backend-view/.env -> $(pwd)/.env"
 
 # Installer PM2 globalement si ce n'est pas déjà fait
 if ! command -v pm2 &> /dev/null; then
@@ -1458,9 +1565,6 @@ fi
 echo "📦 Installation des dépendances (npm install)"
 npm install || { echo "❌ npm install a échoué"; exit 1; }
 
-# Créer le dossier de logs s'il n'existe pas
-mkdir -p logs
-
 # Démarrer ou redémarrer le service avec PM2
 echo "🚀 Démarrage du Back-end-view avec PM2..."
 pm2 describe backend-view > /dev/null 2>&1
@@ -1470,7 +1574,7 @@ if [ $? -eq 0 ]; then
     pm2 restart backend-view --update-env
 else
     echo "✨ Création d'un nouveau service PM2 pour backend-view..."
-    pm2 start index.js --name "backend-view" --output "logs/backend-view-out.log" --error "logs/backend-error.log" --time
+    pm2 start index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
 fi
 
 # Sauvegarder la configuration PM2
@@ -1480,8 +1584,8 @@ pm2 save
 pm2 startup | tail -n 1 | bash
 
 echo "✅ Back-end-view est géré par PM2"
-echo "📝 Logs d'accès: $(pwd)/logs/backend-view-out.log"
-echo "📝 Logs d'erreur: $(pwd)/logs/backend-error.log"
+echo "📝 Logs d'accès: $LOG_DIR/backend-view-out.log"
+echo "📝 Logs d'erreur: $LOG_DIR/backend-error.log"
 echo "ℹ️ Commandes utiles:"
 echo "   - Voir les logs: pm2 logs backend-view"
 echo "   - Arrêter: pm2 stop backend-view"
@@ -1490,7 +1594,7 @@ echo "   - Statut: pm2 status"
 
 # Frontend setup
 echo "🚀 Setting up frontend..."
-cd "$HOME/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
+cd "$APPS_DIR/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
 
 echo "📦 Installing frontend dependencies..."
 npm install || { echo "❌ npm install failed"; exit 1; }
@@ -1503,17 +1607,14 @@ if [ $? -eq 0 ]; then
     pm2 restart ryvie-frontend --update-env
 else
     echo "✨ Creating new PM2 service for ryvie-frontend..."
-    pm2 start "npm run dev" --name "ryvie-frontend" --output "$HOME/Ryvie/Ryvie-Front/logs/frontend-out.log" --error "$HOME/Ryvie/Ryvie-Front/logs/frontend-error.log" --time
+    pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
 fi
-
-# Create logs directory if it doesn't exist
-mkdir -p logs
 
 # Save PM2 configuration
 pm2 save
 
 echo "✅ Frontend is now managed by PM2"
-echo "📝 Frontend logs: $HOME/Ryvie/Ryvie-Front/logs/frontend-*.log"
+echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
 echo "ℹ️ Useful commands:"
 echo "   - View logs: pm2 logs ryvie-frontend"
 echo "   - Stop: pm2 stop ryvie-frontend"
