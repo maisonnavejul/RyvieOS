@@ -1622,18 +1622,3 @@ echo "   - Restart: pm2 restart ryvie-frontend"
 echo "   - Status: pm2 status"
 
 newgrp docker
-
-echo ""
-echo "-----------------------------------------------------"
-echo "Résumé final des chemins sous /data"
-echo "-----------------------------------------------------"
-echo "DATA_ROOT: $DATA_ROOT"
-echo "APPS_DIR: $APPS_DIR"
-echo "CONFIG_DIR: $CONFIG_DIR"
-echo "LOG_DIR: $LOG_DIR"
-echo "DOCKER_ROOT: $DOCKER_ROOT"
-echo "PM2_HOME: $PM2_HOME"
-echo "- NetBird état: $DATA_ROOT/netbird, config: $CONFIG_DIR/netbird"
-echo "- Redis data: $DATA_ROOT/redis"
-echo "- Portainer data: $DATA_ROOT/portainer"
-echo "- rclone config: $RCLONE_CONFIG"
