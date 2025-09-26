@@ -422,7 +422,6 @@ echo ""
 echo "----------------------------------------------------"
 echo "Étape 5: Installation et Configuration de NetBird "
 echo "----------------------------------------------------"
-#!/bin/bash
 
 #==========================================
 # NetBird Configuration and Setup Script
