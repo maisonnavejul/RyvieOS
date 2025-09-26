@@ -790,7 +790,17 @@ EOF
     log_info "Fichier $env_file généré"
     log_info "Configuration d'environnement terminée"
 }
+# --- Déployer le .env côté tdrive (remplace l'existant) ---
+# Source déjà générée : $env_file = /data/config/rdrive/.env
+local tdrive_env="$APPS_DIR/$RDRIVE_DIR/.env"   # /data/apps/Ryvie-rDrive/tdrive/.env
 
+# Copie et droits
+mkdir -p "$(dirname "$tdrive_env")"
+cp -f "$env_file" "$tdrive_env"
+chmod 600 "$tdrive_env" || true
+chown "$USER:$USER" "$tdrive_env" 2>/dev/null || true
+
+log_info "Nouveau .env déployé → $tdrive_env"
 #==========================================
 # VALIDATION FUNCTIONS
 #==========================================
