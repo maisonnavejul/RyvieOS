@@ -1548,6 +1548,8 @@ fi
 echo "📦 Installation des dépendances (npm install)"
 npm install || { echo "❌ npm install a échoué"; exit 1; }
 
+sudo usermod -aG docker ryvie
+
 # Démarrer ou redémarrer le service avec PM2
 echo "🚀 Démarrage du Back-end-view avec PM2..."
 pm2 describe backend-view > /dev/null 2>&1
