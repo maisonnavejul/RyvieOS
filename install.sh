@@ -914,23 +914,6 @@ else
     sudo systemctl enable --now redis-server
 fi
 
-# Déplacer les données Redis sous $DATA_ROOT/redis (idempotent)
-if [ -d /var/lib/redis ] || [ -f /etc/redis/redis.conf ]; then
-    echo "📦 Migration des données Redis vers $DATA_ROOT/redis..."
-    sudo systemctl stop redis-server || true
-    sudo mkdir -p "$DATA_ROOT/redis"
-    sudo rsync -a /var/lib/redis/ "$DATA_ROOT/redis/" || true
-    # Mettre à jour le répertoire de données dans redis.conf (préserver autres réglages)
-    if [ -f /etc/redis/redis.conf ]; then
-        if grep -q '^dir ' /etc/redis/redis.conf; then
-            sudo sed -i "s#^dir .*#dir $DATA_ROOT/redis#" /etc/redis/redis.conf
-        else
-            echo "dir $DATA_ROOT/redis" | sudo tee -a /etc/redis/redis.conf >/dev/null
-        fi
-    fi
-    sudo systemctl start redis-server || true
-fi
-
 # Vérifier l'état du service Redis
 if systemctl is-active --quiet redis-server; then
     echo "Redis est en cours d'exécution."
@@ -1620,5 +1603,8 @@ echo "   - View logs: pm2 logs ryvie-frontend"
 echo "   - Stop: pm2 stop ryvie-frontend"
 echo "   - Restart: pm2 restart ryvie-frontend"
 echo "   - Status: pm2 status"
+
+usermod -aG sudo ryvie
+chown -R ryvie:ryvie /data
 
 newgrp docker
