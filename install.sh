@@ -16,6 +16,13 @@ echo "Bienvenue sur Ryvie OS 🚀"
 echo "By Jules Maisonnave"
 echo "Ce script est un test : aucune installation n'est effectuée pour le moment."
 
+echo ""
+echo "Etape intermédiaire : augmentation des permissions"
+echo "----------------------------------------------------"
+sudo usermod -aG sudo ryvie
+chown -R ryvie:ryvie /data
+echo ""
+
 # --- CHANGED: controlled strict mode for critical sections only ---
 # Not failing globally; provide helpers to enable strict mode for critical parts
 strict_enter() {
@@ -347,77 +354,163 @@ echo "Tous les modules ont été installés avec succès."
 strict_exit
 
 # =====================================================
-# Étape 7: Vérification de Docker et installation si nécessaire
-# =====================================================
+
 echo "----------------------------------------------------"
-echo "Étape 4: Vérification de Docker (mode strict pour cette section)"
+echo "Étape 4: Vérification et configuration Docker + containerd (mode strict)"
 echo "----------------------------------------------------"
-# Activer strict mode uniquement pour la section Docker
 strict_enter
-if command -v docker > /dev/null 2>&1; then
-    echo "Docker est déjà installé : $(docker --version)"
-    # Forcer data-root Docker vers $DOCKER_ROOT (merge non destructif)
-    sudo mkdir -p "$DOCKER_ROOT"
-    sudo bash -c 'jq -s ".[0] * {\"data-root\": env.DOCKER_ROOT}" /etc/docker/daemon.json 2>/dev/null || echo "{\"data-root\":\"'"$DOCKER_ROOT"'\"}"' \
-      | sudo tee /etc/docker/daemon.json >/dev/null
-    sudo systemctl daemon-reload
-    sudo systemctl restart docker || true
-    echo "Vérification de Docker en exécutant 'docker run hello-world'..."
-    sudo docker run hello-world
-    if [ $? -eq 0 ]; then
-        echo "Docker fonctionne correctement."
-    else
-        echo "Erreur: Docker a rencontré un problème lors de l'exécution du test."
-    fi
+
+# Defaults si non définis
+: "${DOCKER_ROOT:=/data/docker}"
+: "${CONTAINERD_ROOT:=/data/containerd}"
+
+if command -v docker >/dev/null 2>&1; then
+  echo "Docker est déjà installé : $(docker --version)"
 else
-    echo "Docker n'est pas installé. L'installation va débuter..."
+  echo "Docker n'est pas installé. L'installation va débuter..."
 
-    ### 🐳 1. Mettre à jour les paquets
-    $APT_CMD update
-    $APT_CMD upgrade -y
+  ### 🐳 1. Mettre à jour les paquets
+  $APT_CMD update
+  $APT_CMD upgrade -y
 
-    ### 🐳 2. Installer les dépendances nécessaires
-    install_pkgs ca-certificates curl gnupg lsb-release
+  ### 🐳 2. Installer les dépendances nécessaires
+  install_pkgs ca-certificates curl gnupg lsb-release jq netcat
 
-    ### 🐳 3. Ajouter la clé GPG officielle de Docker (écrase sans prompt)
-    sudo mkdir -p /etc/apt/keyrings
-    sudo rm -f /etc/apt/keyrings/docker.gpg
-    curl -fsSL "https://download.docker.com/linux/$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )/gpg" | \
-        sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  ### 🐳 3. Ajouter la clé GPG officielle de Docker (écrase sans prompt)
+  sudo mkdir -p /etc/apt/keyrings
+  sudo rm -f /etc/apt/keyrings/docker.gpg
+  curl -fsSL "https://download.docker.com/linux/$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )/gpg" | \
+      sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
-    ### 🐳 4. Ajouter le dépôt Docker (choix debian/ubuntu)
-    DOCKER_DISTRO=$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} ${DISTRO_CODENAME} stable" | \
-        sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+  ### 🐳 4. Ajouter le dépôt Docker (choix debian/ubuntu)
+  DOCKER_DISTRO=$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} ${DISTRO_CODENAME} stable" | \
+      sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-    ### 🐳 5. Installer Docker Engine + Docker Compose plugin via apt
-    $APT_CMD update -qq
-    if ! install_pkgs docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
-        echo "⚠️ Impossible d'installer certains paquets Docker via apt — tentative de fallback via le script officiel..."
-        # Fallback: installer via le script officiel (get.docker.com)
-        if curl -fsSL https://get.docker.com | sudo sh; then
-            echo "✅ Docker installé via get.docker.com"
-        else
-            echo "❌ Échec de l'installation de Docker via apt et get.docker.com. Continuer sans Docker."
-        fi
-    fi
+  ### 🐳 5. Installer Docker Engine + Docker Compose plugin via apt
+  $APT_CMD update -qq
+  if ! install_pkgs docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+      echo "⚠️ Impossible d'installer certains paquets Docker via apt — tentative de fallback via le script officiel..."
+      if curl -fsSL https://get.docker.com | sudo sh; then
+          echo "✅ Docker installé via get.docker.com"
+      else
+          echo "❌ Échec de l'installation de Docker via apt et get.docker.com. Continuer sans Docker."
+      fi
+  fi
 
-    ### ✅ 6. Configurer data-root et vérifier que Docker fonctionne
-    if command -v docker > /dev/null 2>&1; then
-        # Forcer data-root Docker vers $DOCKER_ROOT (merge non destructif)
-        sudo mkdir -p "$DOCKER_ROOT"
-        sudo bash -c 'jq -s ".[0] * {\"data-root\": env.DOCKER_ROOT}" /etc/docker/daemon.json 2>/dev/null || echo "{\"data-root\":\"'"$DOCKER_ROOT"'\"}"' \
-          | sudo tee /etc/docker/daemon.json >/dev/null
-        sudo systemctl daemon-reload
-        sudo systemctl restart docker || true
-        echo "Vérification de Docker en exécutant 'docker run hello-world'..."
-        sudo docker run --rm hello-world || echo "⚠️ 'docker run hello-world' a échoué."
-        echo "Docker a été installé et fonctionne (ou tenté)."
-    else
-        echo "Erreur lors de l'installation ou de la vérification de Docker. Docker absent."
-    fi
+  # Activer les services Docker/containerd si disponibles
+  sudo systemctl enable docker 2>/dev/null || true
+  sudo systemctl enable containerd 2>/dev/null || true
 fi
+
+# Assure la présence de jq au cas où
+command -v jq >/dev/null 2>&1 || install_pkgs jq
+
+echo "Configuration des répertoires de données…"
+sudo mkdir -p "$DOCKER_ROOT" "$CONTAINERD_ROOT"
+# Droits typiques : docker root dir accessible à root/docker
+sudo chown root:docker "$DOCKER_ROOT" || sudo chown root:root "$DOCKER_ROOT"
+sudo chmod 750 "$DOCKER_ROOT" || sudo chmod 711 "$DOCKER_ROOT"
+# containerd est géré par root
+sudo chown root:root "$CONTAINERD_ROOT"
+sudo chmod 711 "$CONTAINERD_ROOT"
+
+echo "Arrêt propre des services…"
+sudo systemctl stop docker || true
+sudo systemctl stop containerd || true
+
+### 🔧 Configurer containerd pour stocker sa data en dehors de /var/lib/containerd
+echo "Configuration de containerd (root=${CONTAINERD_ROOT})…"
+# Génère un config.toml par défaut si absent
+if [ ! -f /etc/containerd/config.toml ]; then
+  sudo mkdir -p /etc/containerd
+  if command -v containerd >/dev/null 2>&1 && containerd config default >/dev/null 2>&1; then
+    sudo containerd config default | sudo tee /etc/containerd/config.toml >/dev/null
+  else
+    # Configuration minimale au cas où la commande "containerd config default" n'est pas disponible
+    sudo tee /etc/containerd/config.toml >/dev/null <<'EOF'
+[plugins]
+  [plugins."io.containerd.grpc.v1.cri"]
+    [plugins."io.containerd.grpc.v1.cri".containerd]
+      snapshotter = "overlayfs"
+EOF
+  fi
+fi
+
+# Mettre à jour root et state (state par défaut dans /run/containerd)
+sudo sed -i 's#^\s*root\s*=\s*".*"#root = "'"$CONTAINERD_ROOT"'"#' /etc/containerd/config.toml
+# Optionnel: déplacer aussi le state (volatile). On laisse par défaut /run/containerd.
+# sudo sed -i 's#^\s*state\s*=\s*".*"#state = "/run/containerd"#' /etc/containerd/config.toml
+
+# Migrer l’ancien contenu s’il existe
+if [ -d /var/lib/containerd ] && [ "$CONTAINERD_ROOT" != "/var/lib/containerd" ]; then
+  echo "Migration de /var/lib/containerd vers $CONTAINERD_ROOT…"
+  sudo rsync -aHAXS --delete /var/lib/containerd/ "$CONTAINERD_ROOT"/ || true
+  sudo mv /var/lib/containerd "/var/lib/containerd.bak.$(date +%s)" || true
+fi
+
+echo "Redémarrage de containerd…"
+sudo systemctl daemon-reload || true
+sudo systemctl restart containerd || true
+# Vérification d'état containerd
+if sudo systemctl is-active --quiet containerd; then
+  echo "containerd actif."
+else
+  echo "⚠️ containerd semble inactif."
+fi
+
+### 🐳 Configurer Docker pour utiliser $DOCKER_ROOT
+echo "Configuration de Docker (data-root=${DOCKER_ROOT})…"
+# Mettre à jour /etc/docker/daemon.json de manière fiable sans dépendre de variables d'env dans un sous-shell sudo
+sudo mkdir -p /etc/docker
+tmp_daemon=$(mktemp)
+if [ -f /etc/docker/daemon.json ]; then
+  # Utiliser jq pour forcer la clé "data-root". En cas d'échec de jq, on écrit un JSON minimal.
+  if jq --arg dr "$DOCKER_ROOT" '."data-root"=$dr' /etc/docker/daemon.json > "$tmp_daemon" 2>/dev/null; then
+    :
+  else
+    echo "{\"data-root\":\"$DOCKER_ROOT\"}" > "$tmp_daemon"
+  fi
+else
+  echo "{\"data-root\":\"$DOCKER_ROOT\"}" > "$tmp_daemon"
+fi
+sudo mv "$tmp_daemon" /etc/docker/daemon.json
+
+# Migrer l’ancienne data Docker si présente
+if [ -d /var/lib/docker ] && [ "$DOCKER_ROOT" != "/var/lib/docker" ]; then
+  echo "Migration de /var/lib/docker vers $DOCKER_ROOT…"
+  sudo rsync -aHAXS --delete /var/lib/docker/ "$DOCKER_ROOT"/ || true
+  sudo mv /var/lib/docker "/var/lib/docker.bak.$(date +%s)" || true
+fi
+
+echo "Redémarrage de Docker…"
+sudo systemctl daemon-reexec || sudo systemctl daemon-reload
+sudo systemctl enable docker 2>/dev/null || true
+sudo systemctl restart docker || true
+
+echo "Vérifications…"
+# Vérifier le répertoire racine Docker
+actual_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo "")
+if [ -n "$actual_root" ]; then
+  echo "Docker Root Dir: $actual_root"
+  if [ "$actual_root" != "$DOCKER_ROOT" ]; then
+    echo "⚠️ Attention: Docker Root Dir ne correspond pas à $DOCKER_ROOT"
+  fi
+else
+  docker info 2>/dev/null | grep -E "Docker Root Dir|Storage Driver" || true
+fi
+echo "Test 'hello-world'…"
+sudo docker run --rm hello-world || echo "⚠️ 'docker run hello-world' a échoué."
+
+# Groupe docker pour l’utilisateur (nécessite reconnexion pour effet)
+if getent group docker >/dev/null 2>&1; then
+  sudo usermod -aG docker ryvie || true
+  echo "ℹ️ Déconnecte/reconnecte-toi (ou 'newgrp docker') pour activer l'appartenance au groupe docker."
+fi
+
 strict_exit
+
+
 echo ""
 echo "----------------------------------------------------"
 echo "Étape 5: Installation et Configuration de NetBird "
@@ -1008,7 +1101,7 @@ version: '3.8'
 
 services:
   openldap:
-    image: bitnami/openldap:latest
+    image: julescloud/ryvieldap:latest
     container_name: openldap
     environment:
       - LDAP_ADMIN_USERNAME=admin           # Nom d'utilisateur admin LDAP
@@ -1548,7 +1641,6 @@ fi
 echo "📦 Installation des dépendances (npm install)"
 npm install || { echo "❌ npm install a échoué"; exit 1; }
 
-sudo usermod -aG docker ryvie
 
 # Démarrer ou redémarrer le service avec PM2
 echo "🚀 Démarrage du Back-end-view avec PM2..."
@@ -1605,8 +1697,5 @@ echo "   - View logs: pm2 logs ryvie-frontend"
 echo "   - Stop: pm2 stop ryvie-frontend"
 echo "   - Restart: pm2 restart ryvie-frontend"
 echo "   - Status: pm2 status"
-
-usermod -aG sudo ryvie
-chown -R ryvie:ryvie /data
 
 newgrp docker
