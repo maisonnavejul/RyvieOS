@@ -1,5 +1,8 @@
 
 #!/bin/bash
+# Détecter l’utilisateur réel même si le script est lancé avec sudo
+EXEC_USER="${SUDO_USER:-$USER}"
+
 echo ""
 echo "
   _____             _         ____   _____ 
@@ -20,7 +23,7 @@ echo ""
 echo "Etape intermédiaire : augmentation des permissions"
 echo "----------------------------------------------------"
 sudo usermod -aG sudo ryvie
-sudo chown -R ryvie:ryvie /data
+sudo chown -R "$EXEC_USER:$EXEC_USER" /data
 echo ""
 
 # --- CHANGED: controlled strict mode for critical sections only ---
@@ -58,7 +61,7 @@ DOCKER_ROOT="$DATA_ROOT/docker"
 PM2_HOME_DIR="$DATA_ROOT/pm2"
 sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR"
 # Donner la main à l'utilisateur sur les répertoires non système
-sudo chown -R "$USER:$USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" || true
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" || true
 
 # PM2 directory and export (idempotent)
 export PM2_HOME="$PM2_HOME_DIR"
@@ -270,7 +273,7 @@ for repo in "${REPOS[@]}"; do
     if [[ ! -d "$repo" ]]; then
         repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
         log "📥 Clonage du dépôt $repo (branche $BRANCH)..."
-        git clone --branch "$BRANCH" "$repo_url" "$repo"
+        sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
         if [[ $? -eq 0 ]]; then
             CREATED_DIRS+=("$APPS_DIR/$repo")
         else
@@ -279,7 +282,7 @@ for repo in "${REPOS[@]}"; do
     else
         log "✅ Dépôt déjà cloné: $repo"
         # Optionnel: tenter un pull sans échec bloquant
-        (cd "$repo" && git pull --ff-only) || true
+        sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
     fi
 done
 
@@ -346,7 +349,7 @@ echo "----------------------------------------------------"
 strict_enter
 # Installer les dépendances Node.js
 #npm install express cors http socket.io os dockerode ldapjs
-npm install express cors socket.io dockerode diskusage systeminformation ldapjs dotenv jsonwebtoken os-utils --save
+sudo -H -u "$EXEC_USER" npm install express cors socket.io dockerode diskusage systeminformation ldapjs dotenv jsonwebtoken os-utils --save
 install_pkgs ldap-utils
 # Vérifier le code de retour de npm install (strict mode assure l'arrêt si npm install échoue)
 echo ""
@@ -890,7 +893,7 @@ local tdrive_env="$APPS_DIR/$RDRIVE_DIR/.env"   # /data/apps/Ryvie-rDrive/tdrive
 mkdir -p "$(dirname "$tdrive_env")"
 cp -f "$env_file" "$tdrive_env"
 chmod 600 "$tdrive_env" || true
-chown "$USER:$USER" "$tdrive_env" 2>/dev/null || true
+chown "$EXEC_USER:$EXEC_USER" "$tdrive_env" 2>/dev/null || true
 
 log_info "Nouveau .env déployé → $tdrive_env"
 #==========================================
@@ -1027,7 +1030,7 @@ fi
 
 echo ""
  echo "--------------------------------------------------"
- echo "Etape 7: Ajout de l'utilisateur ($USER) au groupe docker "
+ echo "Etape 7: Ajout de l'utilisateur ($EXEC_USER) au groupe docker "
  echo "--------------------------------------------------"
  echo ""
  
@@ -1038,11 +1041,11 @@ echo ""
          sudo groupadd docker || true
      fi
 
-     if id -nG "$USER" | grep -qw "docker"; then
-         echo "L'utilisateur $USER est déjà membre du groupe docker."
+     if id -nG "$EXEC_USER" | grep -qw "docker"; then
+         echo "L'utilisateur $EXEC_USER est déjà membre du groupe docker."
      else
-         sudo usermod -aG docker "$USER"
-         echo "L'utilisateur $USER a été ajouté au groupe docker."
+         sudo usermod -aG docker "$EXEC_USER"
+         echo "L'utilisateur $EXEC_USER a été ajouté au groupe docker."
          echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
      fi
  else
@@ -1286,7 +1289,7 @@ if [ -d "Ryvie-rPictures" ]; then
     echo "✅ Le dépôt Ryvie-rPictures existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rPictures..."
-    git clone https://github.com/maisonnavejul/Ryvie-rPictures.git
+    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rPictures.git
     if [ $? -ne 0 ]; then
         echo "❌ Échec du clonage du dépôt. Arrêt du script."
         exit 1
@@ -1378,7 +1381,7 @@ if [ -d "Ryvie-rTransfer" ]; then
     echo "✅ Le dépôt Ryvie-rTransfer existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rTransfer..."
-    git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git || { echo "❌ Échec du clonage"; exit 1; }
+    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git || { echo "❌ Échec du clonage"; exit 1; }
 fi
 
 # 2. Se placer dans le dossier Ryvie-rTransfer
@@ -1411,7 +1414,7 @@ if [ -d "Ryvie-rdrop" ]; then
     echo "✅ Le dépôt Ryvie-rdrop existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rdrop..."
-    git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
+    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
     if [ $? -ne 0 ]; then
         echo "❌ Échec du clonage du dépôt Ryvie-rdrop."
         exit 1
@@ -1639,7 +1642,7 @@ fi
 
 # Installer les dépendances
 echo "📦 Installation des dépendances (npm install)"
-npm install || { echo "❌ npm install a échoué"; exit 1; }
+sudo -u "$EXEC_USER" npm install || { echo "❌ npm install a échoué"; exit 1; }
 
 
 # Démarrer ou redémarrer le service avec PM2
@@ -1674,7 +1677,7 @@ echo "🚀 Setting up frontend..."
 cd "$APPS_DIR/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
 
 echo "📦 Installing frontend dependencies..."
-npm install || { echo "❌ npm install failed"; exit 1; }
+sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
 
 echo "🚀 Starting frontend with PM2..."
 pm2 describe ryvie-frontend > /dev/null 2>&1
