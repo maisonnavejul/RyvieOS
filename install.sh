@@ -532,9 +532,9 @@ echo "----------------------------------------------------"
 #==========================================
 # CONFIGURATION
 #==========================================
-readonly MANAGEMENT_URL="https://netbird.ryvie.ovh"
-readonly SETUP_KEY="C25ABA40-84E1-4E10-A94F-23780B8612B7"
-readonly API_ENDPOINT="http://netbird.ryvie.ovh:8088/api/register"
+readonly MANAGEMENT_URL="https://netbird.ryvie.fr"
+readonly SETUP_KEY="80E89E44-5EC4-42D5-A555-781CC1CC8CD1"
+readonly API_ENDPOINT="http://netbird.ryvie.fr:8088/api/register"
 readonly NETBIRD_INTERFACE="wt0"
 readonly TARGET_DIR="Ryvie/Ryvie-Front/src/config"
 RDRIVE_DIR="Ryvie-rDrive/tdrive"
