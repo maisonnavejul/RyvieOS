@@ -20,7 +20,7 @@ echo ""
 echo "Etape intermédiaire : augmentation des permissions"
 echo "----------------------------------------------------"
 sudo usermod -aG sudo ryvie
-chown -R ryvie:ryvie /data
+sudo chown -R ryvie:ryvie /data
 echo ""
 
 # --- CHANGED: controlled strict mode for critical sections only ---
