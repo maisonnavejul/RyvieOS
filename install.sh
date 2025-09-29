@@ -374,7 +374,7 @@ else
   $APT_CMD upgrade -y
 
   ### 🐳 2. Installer les dépendances nécessaires
-  install_pkgs ca-certificates curl gnupg lsb-release jq netcat
+  install_pkgs ca-certificates curl gnupg lsb-release jq 
 
   ### 🐳 3. Ajouter la clé GPG officielle de Docker (écrase sans prompt)
   sudo mkdir -p /etc/apt/keyrings
