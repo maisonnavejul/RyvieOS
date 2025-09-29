@@ -19,13 +19,6 @@ echo "Bienvenue sur Ryvie OS 🚀"
 echo "By Jules Maisonnave"
 echo "Ce script est un test : aucune installation n'est effectuée pour le moment."
 
-echo ""
-echo "Etape intermédiaire : augmentation des permissions"
-echo "----------------------------------------------------"
-sudo usermod -aG sudo ryvie
-sudo chown -R "$EXEC_USER:$EXEC_USER" /data
-echo ""
-
 # --- CHANGED: controlled strict mode for critical sections only ---
 # Not failing globally; provide helpers to enable strict mode for critical parts
 strict_enter() {
@@ -304,7 +297,12 @@ else
     fi
 fi
 
-
+echo "----------------------------------------------------"
+echo "Etape intermédiaire : augmentation des permissions"
+echo "----------------------------------------------------"
+sudo usermod -aG sudo ryvie
+sudo chown -R "$EXEC_USER:$EXEC_USER" /data
+echo ""
 echo ""
 echo "------------------------------------------"
 echo " Étape 2 : Vérification et installation de Node.js "
