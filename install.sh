@@ -1,5 +1,5 @@
 
-#!/usr/bin/env
+#!/usr/bin/env bash
 # Détecter l’utilisateur réel même si le script est lancé avec sudo
 EXEC_USER="${SUDO_USER:-$USER}"
 
