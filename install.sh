@@ -869,7 +869,7 @@ generate_env_file() {
         exit 1
     fi
     
-    # Générer le fichier .env
+    # Générer le fichier .env sous /data/config
     mkdir -p "$CONFIG_DIR/rdrive"
     local env_file="$CONFIG_DIR/rdrive/.env"
     cat > "$env_file" << EOF
@@ -881,19 +881,18 @@ REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=https://$document_rdrive
 EOF
     
     log_info "Fichier $env_file généré"
+
+    # --- Déploiement dans $APPS_DIR/$RDRIVE_DIR/.env ---
+    local tdrive_env="$rdrive_path/.env"
+    [ -f "$tdrive_env" ] && cp "$tdrive_env" "$tdrive_env.bak.$(date +%s)" || true
+    cp -f "$env_file" "$tdrive_env"
+    chmod 600 "$tdrive_env" || true
+    chown "$EXEC_USER:$EXEC_USER" "$tdrive_env" 2>/dev/null || true
+    log_info "✅ Nouveau .env déployé → $tdrive_env"
+
     log_info "Configuration d'environnement terminée"
 }
-# --- Déployer le .env côté tdrive (remplace l'existant) ---
-# Source déjà générée : $env_file = /data/config/rdrive/.env
-local tdrive_env="$APPS_DIR/$RDRIVE_DIR/.env"   # /data/apps/Ryvie-rDrive/tdrive/.env
 
-# Copie et droits
-mkdir -p "$(dirname "$tdrive_env")"
-cp -f "$env_file" "$tdrive_env"
-chmod 600 "$tdrive_env" || true
-chown "$EXEC_USER:$EXEC_USER" "$tdrive_env" 2>/dev/null || true
-
-log_info "Nouveau .env déployé → $tdrive_env"
 #==========================================
 # VALIDATION FUNCTIONS
 #==========================================
