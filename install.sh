@@ -538,12 +538,8 @@ readonly TARGET_DIR="Ryvie/Ryvie-Front/src/config"
 RDRIVE_DIR="Ryvie-rDrive/tdrive"
 
 # Persistance NetBird sous $DATA_ROOT/netbird (idempotent)
-sudo systemctl stop netbird || true
+
 sudo mkdir -p "$DATA_ROOT/netbird"
-sudo rsync -a /var/lib/netbird/ "$DATA_ROOT/netbird/" || true
-sudo rm -rf /var/lib/netbird
-sudo ln -s "$DATA_ROOT/netbird" /var/lib/netbird
-sudo systemctl start netbird || true
 
 #==========================================
 # COLORS FOR OUTPUT
@@ -614,6 +610,40 @@ detect_system() {
 #==========================================
 # NETBIRD FUNCTIONS
 #==========================================
+persist_netbird_data() {
+    local src="/var/lib/netbird"
+    local dst="${DATA_ROOT:-/data}/netbird"
+
+    # S'assurer que le dossier de destination existe
+    sudo mkdir -p "$dst"
+
+    # Si déjà lié → rien à faire
+    if [ -L "$src" ]; then
+        log_info "NetBird data already linked to $dst"
+        return 0
+    fi
+
+    # Stopper le service s'il existe
+    if systemctl list-unit-files 2>/dev/null | grep -q '^netbird\.service'; then
+        sudo systemctl stop netbird 2>/dev/null || true
+    fi
+
+    # Migrer l'éventuel contenu existant
+    if [ -d "$src" ]; then
+        sudo rsync -a "$src"/ "$dst"/ 2>/dev/null || true
+        sudo mv "$src" "/var/lib/netbird.bak.$(date +%s)" 2>/dev/null || sudo rm -rf "$src"
+    fi
+
+    # Créer le lien symbolique vers /data
+    sudo ln -s "$dst" "$src" 2>/dev/null || true
+
+    # Redémarrer si le service existe
+    if systemctl list-unit-files 2>/dev/null | grep -q '^netbird\.service'; then
+        sudo systemctl start netbird 2>/dev/null || true
+    fi
+
+    return 0
+}
 
 check_netbird_installed() {
     command_exists netbird
@@ -930,6 +960,8 @@ main_netbird_setup() {
     else
         log_info "NetBird is already installed"
     fi
+    
+    persist_netbird_data
 
     # Connect NetBird if needed
     if ! check_netbird_connected; then
@@ -1076,9 +1108,9 @@ else
   echo "⚠️ Portainer ignoré : Docker non installé."
 fi
   
-  echo "-----------------------------------------------------"
-  echo "Etape 9: Ip du cloud Ryvie ryvie.local "
-  echo "-----------------------------------------------------"
+echo "-----------------------------------------------------"
+echo "Etape 9: Ip du cloud Ryvie ryvie.local "
+echo "-----------------------------------------------------"
 
 # Installer avahi via la fonction d'installation (compatible Debian)
 install_pkgs avahi-daemon avahi-utils || true
