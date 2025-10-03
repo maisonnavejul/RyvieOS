@@ -1,4 +1,8 @@
-#!/bin/bash
+
+#!/usr/bin/env bash
+# Détecter l’utilisateur réel même si le script est lancé avec sudo
+EXEC_USER="${SUDO_USER:-$USER}"
+
 echo ""
 echo "
   _____             _         ____   _____ 
@@ -39,16 +43,32 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 ID="${ID:-}"
 VERSION_ID="${VERSION_ID:-}"
 
-# helper: retourne Desktop/Bureau ou HOME si introuvable
-get_desktop_dir() {
-    local d="$HOME/Bureau"
-    if [ ! -d "$d" ]; then
-        d="$HOME/Desktop"
-    fi
-    if [ ! -d "$d" ]; then
-        d="$HOME"
-    fi
-    printf '%s' "$d"
+# =====================================================
+# Global /data paths (strict OS/Data separation)
+# =====================================================
+DATA_ROOT="/data"
+APPS_DIR="$DATA_ROOT/apps"
+CONFIG_DIR="$DATA_ROOT/config"
+LOG_DIR="$DATA_ROOT/logs"
+DOCKER_ROOT="$DATA_ROOT/docker"
+PM2_HOME_DIR="$DATA_ROOT/pm2"
+sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR"
+# Donner la main à l'utilisateur sur les répertoires non système
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" || true
+
+# PM2 directory and export (idempotent)
+export PM2_HOME="$PM2_HOME_DIR"
+echo 'export PM2_HOME="/data/pm2"' | sudo tee -a /etc/profile.d/ryvie_pm2.sh >/dev/null
+
+# rclone configuration path under /data/config
+export RCLONE_CONFIG="$CONFIG_DIR/rclone/rclone.conf"
+sudo mkdir -p "$(dirname "$RCLONE_CONFIG")"
+sudo touch "$RCLONE_CONFIG" || true
+sudo chmod 600 "$RCLONE_CONFIG" || true
+
+# helper: retourne le répertoire de travail des apps (path-only)
+get_work_dir() {
+    printf '%s' "$APPS_DIR"
 }
 
 # =====================================================
@@ -148,6 +168,22 @@ else
     install_pkgs curl || { echo "❌ Échec de l'installation de curl"; exit 1; }
 fi
 
+# Vérifier et installer jq si nécessaire (utilisé plus loin dans le script)
+if command -v jq > /dev/null 2>&1; then
+    echo "✅ jq est déjà installé : $(jq --version)"
+else
+    echo "⚙️ Installation de jq..."
+    install_pkgs jq || { echo "❌ Échec de l'installation de jq"; exit 1; }
+fi
+
+# Vérifier et installer rsync si nécessaire (utilisé pour les migrations de données)
+if command -v rsync > /dev/null 2>&1; then
+    echo "✅ rsync est déjà installé : $(rsync --version | head -n1)"
+else
+    echo "⚙️ Installation de rsync..."
+    install_pkgs rsync || { echo "❌ Échec de l'installation de rsync"; exit 1; }
+fi
+
 # 3. Vérification de la mémoire physique (minimum 400 MB)
 MEMORY=$(free -m | awk '/Mem:/ {print $2}')
 MIN_MEMORY=400
@@ -182,13 +218,14 @@ REPOS=(
     "Ryvie"
 )
 
-
-# Demander la branche à cloner
-read -p "Quelle branche veux-tu cloner ? " BRANCH
-if [[ -z "$BRANCH" ]]; then
-    echo "❌ Branche invalide. Annulation."
-    exit 1
+# Branche à cloner: interroge si RYVIE_BRANCH n'est pas défini
+if [ -z "${RYVIE_BRANCH:-}" ]; then
+    read -p "Quelle branche veux-tu cloner ? [main]: " BRANCH_INPUT
+    BRANCH="${BRANCH_INPUT:-main}"
+else
+    BRANCH="$RYVIE_BRANCH"
 fi
+echo "Branche sélectionnée: $BRANCH"
 
 # Fonction de vérification des identifiants
 verify_credentials() {
@@ -200,30 +237,23 @@ verify_credentials() {
     [[ "$status_code" == "200" ]]
 }
 
-# Demander les identifiants GitHub s'ils ne sont pas valides
-while true; do
-    if [[ -z "$GITHUB_USER" ]]; then
-        read -p "Entrez votre nom d'utilisateur GitHub : " GITHUB_USER
-    fi
+# Identifiants GitHub: interroge si non fournis via env
+if [ -z "${GITHUB_USER:-}" ]; then
+    read -p "Entrez votre nom d'utilisateur GitHub : " GITHUB_USER
+fi
+if [ -z "${GITHUB_TOKEN:-}" ]; then
+    read -s -p "Entrez votre token GitHub personnel : " GITHUB_TOKEN
+    echo
+fi
+if verify_credentials "$GITHUB_USER" "$GITHUB_TOKEN"; then
+    echo "✅ Authentification GitHub réussie."
+else
+    echo "❌ Authentification GitHub échouée."
+    exit 1
+fi
 
-    if [[ -z "$GITHUB_TOKEN" ]]; then
-        read -s -p "Entrez votre token GitHub personnel : " GITHUB_TOKEN
-        echo
-    fi
-
-    if verify_credentials "$GITHUB_USER" "$GITHUB_TOKEN"; then
-        echo "✅ Authentification GitHub réussie."
-        break
-    else
-        echo "❌ Authentification échouée. Veuillez réessayer."
-        unset GITHUB_USER
-        unset GITHUB_TOKEN
-    fi
-done
-
-# Déterminer le répertoire de travail de façon robuste (Bureau/Desktop/Home)
-WORKDIR="$(get_desktop_dir)"
-cd "$WORKDIR" || { echo "❌ Impossible d'accéder à $WORKDIR"; exit 1; }
+# Se positionner dans le répertoire des applications
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
 
 CREATED_DIRS=()
 
@@ -236,14 +266,16 @@ for repo in "${REPOS[@]}"; do
     if [[ ! -d "$repo" ]]; then
         repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
         log "📥 Clonage du dépôt $repo (branche $BRANCH)..."
-        git clone --branch "$BRANCH" "$repo_url" "$repo"
+        sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
         if [[ $? -eq 0 ]]; then
-            CREATED_DIRS+=("$WORKDIR/$repo")
+            CREATED_DIRS+=("$APPS_DIR/$repo")
         else
             log "❌ Échec du clonage du dépôt : $repo"
         fi
     else
         log "✅ Dépôt déjà cloné: $repo"
+        # Optionnel: tenter un pull sans échec bloquant
+        sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
     fi
 done
 
@@ -265,10 +297,15 @@ else
     fi
 fi
 
-
+echo "----------------------------------------------------"
+echo "Etape intermédiaire : augmentation des permissions"
+echo "----------------------------------------------------"
+sudo usermod -aG sudo ryvie
+sudo chown -R "$EXEC_USER:$EXEC_USER" /data
+echo ""
 echo ""
 echo "------------------------------------------"
-echo " Étape 5 : Vérification et installation de Node.js "
+echo " Étape 2 : Vérification et installation de Node.js "
 echo "------------------------------------------"
 echo ""
 
@@ -304,83 +341,688 @@ fi
 # 6. Vérification des dépendances
 # =====================================================
 echo "----------------------------------------------------"
-echo "Etape 6: Vérification des dépendances (mode strict pour cette section)"
+echo "Etape 3: Vérification des dépendances (mode strict pour cette section)"
 echo "----------------------------------------------------"
 # Activer le comportement "exit on error" uniquement pour l'installation des dépendances
 strict_enter
 # Installer les dépendances Node.js
 #npm install express cors http socket.io os dockerode ldapjs
-npm install express cors socket.io dockerode diskusage systeminformation ldapjs dotenv jsonwebtoken os-utils --save
-install_pkgs ldap-utils
+sudo -H -u "$EXEC_USER" npm install express cors socket.io dockerode diskusage systeminformation ldapjs dotenv jsonwebtoken os-utils --save
+install_pkgs gdisk parted build-essential python3 make g++ ldap-utils
 # Vérifier le code de retour de npm install (strict mode assure l'arrêt si npm install échoue)
 echo ""
 echo "Tous les modules ont été installés avec succès."
 strict_exit
 
 # =====================================================
-# Étape 7: Vérification de Docker et installation si nécessaire
-# =====================================================
+
 echo "----------------------------------------------------"
-echo "Étape 7: Vérification de Docker (mode strict pour cette section)"
+echo "Étape 4: Vérification et configuration Docker + containerd (mode strict)"
 echo "----------------------------------------------------"
-# Activer strict mode uniquement pour la section Docker
 strict_enter
-if command -v docker > /dev/null 2>&1; then
-    echo "Docker est déjà installé : $(docker --version)"
-    echo "Vérification de Docker en exécutant 'docker run hello-world'..."
-    sudo docker run hello-world
-    if [ $? -eq 0 ]; then
-        echo "Docker fonctionne correctement."
-    else
-        echo "Erreur: Docker a rencontré un problème lors de l'exécution du test."
-    fi
+
+# Defaults si non définis
+: "${DOCKER_ROOT:=/data/docker}"
+: "${CONTAINERD_ROOT:=/data/containerd}"
+
+if command -v docker >/dev/null 2>&1; then
+  echo "Docker est déjà installé : $(docker --version)"
 else
-    echo "Docker n'est pas installé. L'installation va débuter..."
+  echo "Docker n'est pas installé. L'installation va débuter..."
 
-    ### 🐳 1. Mettre à jour les paquets
-    $APT_CMD update
-    $APT_CMD upgrade -y
+  ### 🐳 1. Mettre à jour les paquets
+  $APT_CMD update
+  $APT_CMD upgrade -y
 
-    ### 🐳 2. Installer les dépendances nécessaires
-    install_pkgs ca-certificates curl gnupg lsb-release
+  ### 🐳 2. Installer les dépendances nécessaires
+  install_pkgs ca-certificates curl gnupg lsb-release jq 
 
-    ### 🐳 3. Ajouter la clé GPG officielle de Docker (écrase sans prompt)
-    sudo mkdir -p /etc/apt/keyrings
-    sudo rm -f /etc/apt/keyrings/docker.gpg
-    curl -fsSL "https://download.docker.com/linux/$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )/gpg" | \
-        sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  ### 🐳 3. Ajouter la clé GPG officielle de Docker (écrase sans prompt)
+  sudo mkdir -p /etc/apt/keyrings
+  sudo rm -f /etc/apt/keyrings/docker.gpg
+  curl -fsSL "https://download.docker.com/linux/$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )/gpg" | \
+      sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
-    ### 🐳 4. Ajouter le dépôt Docker (choix debian/ubuntu)
-    DOCKER_DISTRO=$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} ${DISTRO_CODENAME} stable" | \
-        sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+  ### 🐳 4. Ajouter le dépôt Docker (choix debian/ubuntu)
+  DOCKER_DISTRO=$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} ${DISTRO_CODENAME} stable" | \
+      sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-    ### 🐳 5. Installer Docker Engine + Docker Compose plugin via apt
-    $APT_CMD update -qq
-    if ! install_pkgs docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
-        echo "⚠️ Impossible d'installer certains paquets Docker via apt — tentative de fallback via le script officiel..."
-        # Fallback: installer via le script officiel (get.docker.com)
-        if curl -fsSL https://get.docker.com | sudo sh; then
-            echo "✅ Docker installé via get.docker.com"
-        else
-            echo "❌ Échec de l'installation de Docker via apt et get.docker.com. Continuer sans Docker."
-        fi
-    fi
+  ### 🐳 5. Installer Docker Engine + Docker Compose plugin via apt
+  $APT_CMD update -qq
+  if ! install_pkgs docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+      echo "⚠️ Impossible d'installer certains paquets Docker via apt — tentative de fallback via le script officiel..."
+      if curl -fsSL https://get.docker.com | sudo sh; then
+          echo "✅ Docker installé via get.docker.com"
+      else
+          echo "❌ Échec de l'installation de Docker via apt et get.docker.com. Continuer sans Docker."
+      fi
+  fi
 
-    ### ✅ 6. Vérifier que Docker fonctionne
-    if command -v docker > /dev/null 2>&1; then
-        echo "Vérification de Docker en exécutant 'docker run hello-world'..."
-        sudo docker run --rm hello-world || echo "⚠️ 'docker run hello-world' a échoué."
-        echo "Docker a été installé et fonctionne (ou tenté)."
-    else
-        echo "Erreur lors de l'installation ou de la vérification de Docker. Docker absent."
-    fi
+  # Activer les services Docker/containerd si disponibles
+  sudo systemctl enable docker 2>/dev/null || true
+  sudo systemctl enable containerd 2>/dev/null || true
 fi
+
+# Assure la présence de jq au cas où
+command -v jq >/dev/null 2>&1 || install_pkgs jq
+
+echo "Configuration des répertoires de données…"
+sudo mkdir -p "$DOCKER_ROOT" "$CONTAINERD_ROOT"
+# Droits typiques : docker root dir accessible à root/docker
+sudo chown root:docker "$DOCKER_ROOT" || sudo chown root:root "$DOCKER_ROOT"
+sudo chmod 750 "$DOCKER_ROOT" || sudo chmod 711 "$DOCKER_ROOT"
+# containerd est géré par root
+sudo chown root:root "$CONTAINERD_ROOT"
+sudo chmod 711 "$CONTAINERD_ROOT"
+
+echo "Arrêt propre des services…"
+sudo systemctl stop docker || true
+sudo systemctl stop containerd || true
+
+### 🔧 Configurer containerd pour stocker sa data en dehors de /var/lib/containerd
+echo "Configuration de containerd (root=${CONTAINERD_ROOT})…"
+# Génère un config.toml par défaut si absent
+if [ ! -f /etc/containerd/config.toml ]; then
+  sudo mkdir -p /etc/containerd
+  if command -v containerd >/dev/null 2>&1 && containerd config default >/dev/null 2>&1; then
+    sudo containerd config default | sudo tee /etc/containerd/config.toml >/dev/null
+  else
+    # Configuration minimale au cas où la commande "containerd config default" n'est pas disponible
+    sudo tee /etc/containerd/config.toml >/dev/null <<'EOF'
+[plugins]
+  [plugins."io.containerd.grpc.v1.cri"]
+    [plugins."io.containerd.grpc.v1.cri".containerd]
+      snapshotter = "overlayfs"
+EOF
+  fi
+fi
+
+# Mettre à jour root et state (state par défaut dans /run/containerd)
+sudo sed -i 's#^\s*root\s*=\s*".*"#root = "'"$CONTAINERD_ROOT"'"#' /etc/containerd/config.toml
+# Optionnel: déplacer aussi le state (volatile). On laisse par défaut /run/containerd.
+# sudo sed -i 's#^\s*state\s*=\s*".*"#state = "/run/containerd"#' /etc/containerd/config.toml
+
+# Migrer l’ancien contenu s’il existe
+if [ -d /var/lib/containerd ] && [ "$CONTAINERD_ROOT" != "/var/lib/containerd" ]; then
+  echo "Migration de /var/lib/containerd vers $CONTAINERD_ROOT…"
+  sudo rsync -aHAXS --delete /var/lib/containerd/ "$CONTAINERD_ROOT"/ || true
+  sudo mv /var/lib/containerd "/var/lib/containerd.bak.$(date +%s)" || true
+fi
+
+echo "Redémarrage de containerd…"
+sudo systemctl daemon-reload || true
+sudo systemctl restart containerd || true
+# Vérification d'état containerd
+if sudo systemctl is-active --quiet containerd; then
+  echo "containerd actif."
+else
+  echo "⚠️ containerd semble inactif."
+fi
+
+### 🐳 Configurer Docker pour utiliser $DOCKER_ROOT
+echo "Configuration de Docker (data-root=${DOCKER_ROOT})…"
+# Mettre à jour /etc/docker/daemon.json de manière fiable sans dépendre de variables d'env dans un sous-shell sudo
+sudo mkdir -p /etc/docker
+tmp_daemon=$(mktemp)
+if [ -f /etc/docker/daemon.json ]; then
+  # Utiliser jq pour forcer la clé "data-root". En cas d'échec de jq, on écrit un JSON minimal.
+  if jq --arg dr "$DOCKER_ROOT" '."data-root"=$dr' /etc/docker/daemon.json > "$tmp_daemon" 2>/dev/null; then
+    :
+  else
+    echo "{\"data-root\":\"$DOCKER_ROOT\"}" > "$tmp_daemon"
+  fi
+else
+  echo "{\"data-root\":\"$DOCKER_ROOT\"}" > "$tmp_daemon"
+fi
+sudo mv "$tmp_daemon" /etc/docker/daemon.json
+
+# Migrer l’ancienne data Docker si présente
+if [ -d /var/lib/docker ] && [ "$DOCKER_ROOT" != "/var/lib/docker" ]; then
+  echo "Migration de /var/lib/docker vers $DOCKER_ROOT…"
+  sudo rsync -aHAXS --delete /var/lib/docker/ "$DOCKER_ROOT"/ || true
+  sudo mv /var/lib/docker "/var/lib/docker.bak.$(date +%s)" || true
+fi
+
+echo "Redémarrage de Docker…"
+sudo systemctl daemon-reexec || sudo systemctl daemon-reload
+sudo systemctl enable docker 2>/dev/null || true
+sudo systemctl restart docker || true
+
+echo "Vérifications…"
+# Vérifier le répertoire racine Docker
+actual_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo "")
+if [ -n "$actual_root" ]; then
+  echo "Docker Root Dir: $actual_root"
+  if [ "$actual_root" != "$DOCKER_ROOT" ]; then
+    echo "⚠️ Attention: Docker Root Dir ne correspond pas à $DOCKER_ROOT"
+  fi
+else
+  docker info 2>/dev/null | grep -E "Docker Root Dir|Storage Driver" || true
+fi
+echo "Test 'hello-world'…"
+sudo docker run --rm hello-world || echo "⚠️ 'docker run hello-world' a échoué."
+
+# Groupe docker pour l’utilisateur (nécessite reconnexion pour effet)
+if getent group docker >/dev/null 2>&1; then
+  sudo usermod -aG docker ryvie || true
+  echo "ℹ️ Déconnecte/reconnecte-toi (ou 'newgrp docker') pour activer l'appartenance au groupe docker."
+fi
+
 strict_exit
+
 
 echo ""
 echo "----------------------------------------------------"
-echo "Étape 8: Installation de Redis"
+echo "Étape 5: Installation et Configuration de NetBird "
+echo "----------------------------------------------------"
+
+#==========================================
+# NetBird Configuration and Setup Script
+#==========================================
+# Description: Complete NetBird installation, connection, and API registration
+# Author: Ryvie Project
+# Version: 1.0
+#==========================================
+
+
+
+#==========================================
+# CONFIGURATION
+#==========================================
+readonly MANAGEMENT_URL="https://netbird.ryvie.fr"
+readonly SETUP_KEY="80E89E44-5EC4-42D5-A555-781CC1CC8CD1"
+readonly API_ENDPOINT="http://netbird.ryvie.fr:8088/api/register"
+readonly NETBIRD_INTERFACE="wt0"
+readonly TARGET_DIR="Ryvie/Ryvie-Front/src/config"
+RDRIVE_DIR="Ryvie-rDrive/tdrive"
+
+# Persistance NetBird sous $DATA_ROOT/netbird (idempotent)
+
+sudo mkdir -p "$DATA_ROOT/netbird"
+
+#==========================================
+# COLORS FOR OUTPUT
+#==========================================
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m' # No Color
+
+#==========================================
+# LOGGING FUNCTIONS
+#==========================================
+log_info()    { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
+log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+log_debug()   { echo -e "${BLUE}[DEBUG]${NC} $1"; }
+
+#==========================================
+# UTILITY FUNCTIONS
+#==========================================
+
+# Check if command exists
+command_exists() {
+    command -v "$1" &> /dev/null
+}
+
+# Check if running as root
+is_root() {
+    [ "$EUID" -eq 0 ]
+}
+
+# Get machine ID
+get_machine_id() {
+    if [ -f /etc/machine-id ]; then
+        cat /etc/machine-id
+    else
+        uuidgen 2>/dev/null || echo "$(hostname)-$(date +%s)"
+    fi
+}
+
+#==========================================
+# SYSTEM DETECTION
+#==========================================
+detect_system() {
+    local os arch
+    
+    os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    arch=$(uname -m)
+
+    case $arch in
+        x86_64)          arch="amd64" ;;
+        aarch64|arm64)   arch="arm64" ;;
+        armv7l)          arch="armv7" ;;
+        *) 
+            log_error "Unsupported architecture: $arch"
+            exit 1
+            ;;
+    esac
+
+    log_info "Detected system: $os/$arch"
+    
+    # Export for global use
+    export DETECTED_OS="$os"
+    export DETECTED_ARCH="$arch"
+}
+
+#==========================================
+# NETBIRD FUNCTIONS
+#==========================================
+persist_netbird_data() {
+    local src="/var/lib/netbird"
+    local dst="${DATA_ROOT:-/data}/netbird"
+
+    # S'assurer que le dossier de destination existe
+    sudo mkdir -p "$dst"
+
+    # Si déjà lié → rien à faire
+    if [ -L "$src" ]; then
+        log_info "NetBird data already linked to $dst"
+        return 0
+    fi
+
+    # Stopper le service s'il existe
+    if systemctl list-unit-files 2>/dev/null | grep -q '^netbird\.service'; then
+        sudo systemctl stop netbird 2>/dev/null || true
+    fi
+
+    # Migrer l'éventuel contenu existant
+    if [ -d "$src" ]; then
+        sudo rsync -a "$src"/ "$dst"/ 2>/dev/null || true
+        sudo mv "$src" "/var/lib/netbird.bak.$(date +%s)" 2>/dev/null || sudo rm -rf "$src"
+    fi
+
+    # Créer le lien symbolique vers /data
+    sudo ln -s "$dst" "$src" 2>/dev/null || true
+
+    # Redémarrer si le service existe
+    if systemctl list-unit-files 2>/dev/null | grep -q '^netbird\.service'; then
+        sudo systemctl start netbird 2>/dev/null || true
+    fi
+
+    return 0
+}
+
+check_netbird_installed() {
+    command_exists netbird
+}
+
+install_netbird() {
+    log_info "Installing NetBird using official install script..."
+    
+    if curl -fsSL https://pkgs.netbird.io/install.sh | sh; then
+        log_info "NetBird installed successfully"
+        # S'assurer que le service est activé et démarré
+        sudo systemctl enable --now netbird 2>/dev/null || true
+    else
+        log_error "NetBird installation failed"
+        exit 1
+    fi
+}
+
+check_netbird_connected() {
+    if netbird status &> /dev/null; then
+        local status
+        status=$(netbird status | grep "Management" | grep "Connected" || true)
+        [ -n "$status" ]
+    else
+        return 1
+    fi
+}
+
+connect_netbird() {
+    log_info "Connecting to NetBird management server..."
+    
+    # S'assurer que le service est actif
+    sudo systemctl enable --now netbird 2>/dev/null || true
+
+    # Diagnostic de connectivité Management/API (best-effort)
+    if command -v curl >/dev/null 2>&1; then
+        http_mgmt=$(curl -s -o /dev/null -w "%{http_code}" "$MANAGEMENT_URL" || echo "000")
+        http_api=$(curl -s -o /dev/null -w "%{http_code}" "$API_ENDPOINT" || echo "000")
+        log_info "Connectivity check: MANAGEMENT_URL=$http_mgmt API_ENDPOINT=$http_api"
+    fi
+
+    # Stop any existing connection
+    sudo netbird down &> /dev/null || true
+    
+    # Try multiple times to bring up the connection
+    local attempts=5
+    local delay=5
+    local i=1
+    while [ $i -le $attempts ]; do
+        log_info "netbird up attempt $i/$attempts..."
+        if sudo netbird up --management-url "$MANAGEMENT_URL" --setup-key "$SETUP_KEY"; then
+            sleep 5
+            if check_netbird_connected; then
+                log_info "NetBird connected successfully"
+                return 0
+            fi
+        fi
+        log_warning "NetBird up failed or not connected yet. Retrying in ${delay}s..."
+        sleep $delay
+        i=$((i+1))
+    done
+
+    # Diagnostics avant abandon
+    log_error "Failed to connect to NetBird after ${attempts} attempts"
+    sudo systemctl status netbird --no-pager -l 2>/dev/null | tail -n 50 || true
+    sudo journalctl -u netbird --no-pager -n 100 2>/dev/null || true
+    exit 1
+}
+
+#==========================================
+# NETWORK INTERFACE FUNCTIONS
+#==========================================
+
+wait_for_interface() {
+    local max_attempts=30
+    local attempt=1
+    local ip
+
+    log_info "Waiting for $NETBIRD_INTERFACE interface to be ready..."
+
+    while [ $attempt -le $max_attempts ]; do
+        if ip link show "$NETBIRD_INTERFACE" &> /dev/null; then
+            ip=$(get_interface_ip "$NETBIRD_INTERFACE")
+            if [ -n "$ip" ]; then
+                log_info "Interface $NETBIRD_INTERFACE is ready with IP: $ip"
+                return 0
+            fi
+        fi
+        
+        log_warning "Attempt $attempt/$max_attempts: Waiting for interface..."
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+
+    log_error "Interface $NETBIRD_INTERFACE did not become ready in time"
+    return 1
+}
+
+get_interface_ip() {
+    local interface="$1"
+    ip -4 addr show dev "$interface" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1
+}
+
+#==========================================
+# API REGISTRATION FUNCTIONS
+#==========================================
+
+register_with_api() {
+    log_info "Registering with API..."
+
+    local ip machine_id response http_code body
+    
+    ip=$(get_interface_ip "$NETBIRD_INTERFACE")
+    if [ -z "$ip" ]; then
+        log_error "Could not find IP for interface $NETBIRD_INTERFACE"
+        exit 1
+    fi
+    
+    log_info "Using IP address: $ip"
+    machine_id=$(get_machine_id)
+    
+    # Prepare API request
+    local json_payload
+    json_payload=$(cat <<EOF
+{
+    "machineId": "$machine_id",
+    "arch": "$DETECTED_ARCH",
+    "os": "$DETECTED_OS",
+    "backendHost": "$ip",
+    "services": [
+        "rdrive", "rtransfer", "rdrop", "rpictures",
+        "app", "status",
+        "backend.rdrive", "connector.rdrive", "document.rdrive"
+    ]
+}
+EOF
+)
+
+    # Make API request (sauvegarde sous /data/config/netbird)
+    mkdir -p "$CONFIG_DIR/netbird"
+    local netbird_tmp="$CONFIG_DIR/netbird/netbird_data"
+    response=$(curl -s -w "%{http_code}" -o "$netbird_tmp" -X POST "$API_ENDPOINT" \
+        -H "Content-Type: application/json" \
+        -d "$json_payload")
+
+    http_code="${response: -3}"
+    body=$(cat "$netbird_tmp" 2>/dev/null || echo "")
+
+    # Handle response
+    if echo "$body" | grep -q '"status":"already_exists"'; then
+        log_info "BackendHost $ip is already registered, skipping registration."
+        return 0
+    fi
+
+    if [ "$http_code" = "200" ] || [ "$http_code" = "201" ]; then
+        log_info "Successfully registered with API"
+        process_api_response
+    else
+        log_error "Failed to register with API (HTTP $http_code)"
+        log_error "Response body saved in: $netbird_tmp"
+        exit 1
+    fi
+}
+
+process_api_response() {
+    local netbird_cfg_dir="$CONFIG_DIR/netbird"
+    local json_file="$netbird_cfg_dir/netbird-data.json"
+    local netbird_tmp="$netbird_cfg_dir/netbird_data"
+
+    mkdir -p "$netbird_cfg_dir"
+    if [ -f "$netbird_tmp" ]; then
+        mv "$netbird_tmp" "$json_file"
+    fi
+
+    if [ -f "$json_file" ]; then
+        log_info "Copying $(basename "$json_file") to $TARGET_DIR"
+        mkdir -p "$TARGET_DIR"
+        if cp "$json_file" "$TARGET_DIR/"; then
+            log_info "Successfully copied $(basename "$json_file") to $TARGET_DIR"
+        else
+            log_warning "Failed to copy $(basename "$json_file") to $TARGET_DIR"
+        fi
+    fi
+}
+
+#==========================================
+# ENVIRONMENT CONFIGURATION FUNCTIONS
+#==========================================
+
+install_jq() {
+    if command_exists jq; then
+        return 0
+    fi
+    
+    log_info "Installing jq..."
+    
+    if command_exists apt; then
+        sudo apt update && sudo apt install -y jq
+    elif command_exists brew; then
+        brew install jq
+    else
+        log_error "Cannot install jq automatically. Please install jq manually."
+        exit 1
+    fi
+}
+
+# Fonction pour générer le fichier .env
+generate_env_file() {
+    local json_file="$CONFIG_DIR/netbird/netbird-data.json"
+    local rdrive_path="$APPS_DIR/$RDRIVE_DIR"
+    
+    log_info "=== Début de la phase de configuration d'environnement ==="
+    log_info "Génération de la configuration d'environnement..."
+    
+    # Vérifier si le fichier JSON existe dans /data/config/netbird
+    if [ ! -f "$json_file" ]; then
+        log_error "netbird-data.json introuvable dans $CONFIG_DIR/netbird"
+        exit 1
+    fi
+    
+    # S'assurer que jq est disponible
+    install_jq
+    
+    # S'assurer que le répertoire RDRIVE_DIR existe
+    if [ ! -d "$rdrive_path" ]; then
+        log_warning "$rdrive_path n'existe pas. Création en cours..."
+        mkdir -p "$rdrive_path" || {
+            log_error "Échec de la création du répertoire $rdrive_path"
+            exit 1
+        }
+    fi
+    
+    # Aller dans le répertoire de l'app rDrive sous /data/apps
+    cd "$rdrive_path" || {
+        log_error "Impossible de changer vers le répertoire $RDRIVE_DIR"
+        exit 1
+    }
+    
+    log_info "Travail dans le répertoire: $(pwd)"
+    
+    # Extraire les domaines du fichier JSON
+    local rdrive backend_rdrive connector_rdrive document_rdrive
+    
+    rdrive=$(jq -r '.domains.rdrive' "$json_file")
+    backend_rdrive=$(jq -r '.domains."backend.rdrive"' "$json_file")
+    connector_rdrive=$(jq -r '.domains."connector.rdrive"' "$json_file")
+    document_rdrive=$(jq -r '.domains."document.rdrive"' "$json_file")
+    
+    # Valider l'extraction
+    if [ "$rdrive" = "null" ] || [ "$backend_rdrive" = "null" ] || \
+       [ "$connector_rdrive" = "null" ] || [ "$document_rdrive" = "null" ]; then
+        log_error "Impossible d'extraire les domaines de $json_file. Vérifiez la structure JSON."
+        exit 1
+    fi
+    
+    # Générer le fichier .env sous /data/config
+    mkdir -p "$CONFIG_DIR/rdrive"
+    local env_file="$CONFIG_DIR/rdrive/.env"
+    cat > "$env_file" << EOF
+REACT_APP_FRONTEND_URL=https://$rdrive
+REACT_APP_BACKEND_URL=https://$backend_rdrive
+REACT_APP_WEBSOCKET_URL=wss://$backend_rdrive/ws
+REACT_APP_ONLYOFFICE_CONNECTOR_URL=https://$connector_rdrive
+REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=https://$document_rdrive
+EOF
+    
+    log_info "Fichier $env_file généré"
+
+    # --- Déploiement dans $APPS_DIR/$RDRIVE_DIR/.env ---
+    local tdrive_env="$rdrive_path/.env"
+    [ -f "$tdrive_env" ] && cp "$tdrive_env" "$tdrive_env.bak.$(date +%s)" || true
+    cp -f "$env_file" "$tdrive_env"
+    chmod 600 "$tdrive_env" || true
+    chown "$EXEC_USER:$EXEC_USER" "$tdrive_env" 2>/dev/null || true
+    log_info "✅ Nouveau .env déployé → $tdrive_env"
+
+    log_info "Configuration d'environnement terminée"
+}
+
+#==========================================
+# VALIDATION FUNCTIONS
+#==========================================
+
+validate_prerequisites() {
+    log_info "Validating prerequisites..."
+    
+    # Check if running as root when needed
+    if ! is_root && ! check_netbird_installed; then
+        log_error "Please run this script as root or with sudo for installation"
+        exit 1
+    fi
+    
+    # Check required directories exist or can be created
+    if [ ! -d "$(dirname "$TARGET_DIR")" ] && ! mkdir -p "$(dirname "$TARGET_DIR")" 2>/dev/null; then
+        log_warning "Cannot create target directory structure: $TARGET_DIR"
+    fi
+    
+    if [ ! -d "$APPS_DIR/$(dirname "$RDRIVE_DIR")" ]; then
+        log_warning "RDrive directory structure not found: $APPS_DIR/$RDRIVE_DIR"
+    fi
+}
+
+#==========================================
+# MAIN EXECUTION FUNCTIONS
+#==========================================
+
+main_netbird_setup() {
+    log_info "=== Starting NetBird Setup Phase ==="
+    
+    # Install NetBird if needed
+    if ! check_netbird_installed; then
+        log_info "NetBird not found, installing..."
+        install_netbird
+    else
+        log_info "NetBird is already installed"
+    fi
+    
+    persist_netbird_data
+
+    # Connect NetBird if needed
+    if ! check_netbird_connected; then
+        connect_netbird
+    else
+        log_info "NetBird is already connected"
+    fi
+
+    # Wait for interface to be ready
+    if ! wait_for_interface; then
+        log_error "NetBird interface setup failed"
+        exit 1
+    fi
+
+    # Register with API
+    register_with_api
+    
+    log_info "=== NetBird Setup Phase Completed ==="
+}
+
+main_env_setup() {
+    log_info "=== Starting Environment Configuration Phase ==="
+    
+    generate_env_file
+    
+    log_info "=== Environment Configuration Phase Completed ==="
+}
+
+main() {
+    echo "🚀 Launching NetBird Configuration..."
+    
+    # Use APPS_DIR as canonical apps root
+    cd "$APPS_DIR" || { log_error "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
+    
+    # Validate environment
+    validate_prerequisites
+    
+    # Detect system
+    detect_system
+    
+    # Execute main phases
+    main_netbird_setup
+    main_env_setup
+    
+    log_info "🎉 NetBird setup completed successfully!"
+    log_info "All configurations have been generated and services are ready."
+}
+
+#==========================================
+# SCRIPT ENTRY POINT
+#==========================================
+
+# Only run main if script is executed directly (not sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
+
+
+echo ""
+echo "----------------------------------------------------"
+echo "Étape 6: Installation de Redis"
 echo "----------------------------------------------------"
 
 # Vérifier si Redis est déjà installé
@@ -417,7 +1059,7 @@ fi
 
 echo ""
  echo "--------------------------------------------------"
- echo "Etape 9: Ajout de l'utilisateur ($USER) au groupe docker "
+ echo "Etape 7: Ajout de l'utilisateur ($EXEC_USER) au groupe docker "
  echo "--------------------------------------------------"
  echo ""
  
@@ -428,11 +1070,11 @@ echo ""
          sudo groupadd docker || true
      fi
 
-     if id -nG "$USER" | grep -qw "docker"; then
-         echo "L'utilisateur $USER est déjà membre du groupe docker."
+     if id -nG "$EXEC_USER" | grep -qw "docker"; then
+         echo "L'utilisateur $EXEC_USER est déjà membre du groupe docker."
      else
-         sudo usermod -aG docker "$USER"
-         echo "L'utilisateur $USER a été ajouté au groupe docker."
+         sudo usermod -aG docker "$EXEC_USER"
+         echo "L'utilisateur $EXEC_USER a été ajouté au groupe docker."
          echo "Veuillez redémarrer votre session pour appliquer définitivement les changements."
      fi
  else
@@ -440,25 +1082,21 @@ echo ""
  fi
 
   echo "-----------------------------------------------------"
-  echo "Etape 10: Installation et démarrage de Portainer"
+  echo "Etape 8: Installation et démarrage de Portainer"
   echo "-----------------------------------------------------"
   
 # Si Docker absent, sauter Portainer
 if command -v docker > /dev/null 2>&1; then
-  # Créer le volume Portainer s'il n'existe pas
-  if ! sudo docker volume ls -q | grep -q '^portainer_data$'; then
-    sudo docker volume create portainer_data
-  fi
-  
   # Lancer Portainer uniquement s'il n'existe pas déjà
   if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^portainer$'; then
+    sudo mkdir -p "$DATA_ROOT/portainer"
     sudo docker run -d \
       --name portainer \
       --restart=always \
       -p 8000:8000 \
       -p 9443:9443 \
       -v /var/run/docker.sock:/var/run/docker.sock \
-      -v portainer_data:/data \
+      -v "$DATA_ROOT/portainer":/data \
       portainer/portainer-ce:latest
   else
     echo "Portainer existe déjà. Vérification de l'état..."
@@ -470,9 +1108,9 @@ else
   echo "⚠️ Portainer ignoré : Docker non installé."
 fi
   
-  echo "-----------------------------------------------------"
-  echo "Etape 11: Ip du cloud Ryvie ryvie.local"
-  echo "-----------------------------------------------------"
+echo "-----------------------------------------------------"
+echo "Etape 9: Ip du cloud Ryvie ryvie.local "
+echo "-----------------------------------------------------"
 
 # Installer avahi via la fonction d'installation (compatible Debian)
 install_pkgs avahi-daemon avahi-utils || true
@@ -484,9 +1122,8 @@ echo ""
 echo "Etape 12: Configuration d'OpenLDAP avec Docker Compose"
 echo "-----------------------------------------------------"
 
-# 1. Créer le dossier ldap sur Desktop/Bureau/Home et s'y positionner
-LDAP_DIR="$(get_desktop_dir)"
-sudo docker network prune -f
+# 1. Créer le dossier ldap sous /data/apps et s'y positionner
+LDAP_DIR="$(get_work_dir)"
 mkdir -p "$LDAP_DIR/ldap"
 cd "$LDAP_DIR/ldap"
 
@@ -496,7 +1133,7 @@ version: '3.8'
 
 services:
   openldap:
-    image: bitnami/openldap:latest
+    image: julescloud/ryvieldap:latest
     container_name: openldap
     environment:
       - LDAP_ADMIN_USERNAME=admin           # Nom d'utilisateur admin LDAP
@@ -670,18 +1307,18 @@ echo "✅ Configuration ACL pour le groupe admins appliquée."
  echo " ( à implémenter non mis car mdp dedans )"
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 11: Installation de Ryvie rPictures et synchronisation LDAP"
+echo "Étape 10: Installation de Ryvie rPictures et synchronisation LDAP"
 echo "-----------------------------------------------------"
-# 1. Aller sur le Bureau ou Desktop (WORKDIR déjà initialisé plus haut)
-echo "📁 Dossier sélectionné : $WORKDIR"
-cd "$WORKDIR" || { echo "❌ Impossible d'accéder à $WORKDIR"; exit 1; }
+# 1. Se placer dans le dossier des applications (APPS_DIR défini en haut)
+echo "📁 Dossier sélectionné : $APPS_DIR"
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
 
 # 2. Cloner le dépôt si pas déjà présent
 if [ -d "Ryvie-rPictures" ]; then
     echo "✅ Le dépôt Ryvie-rPictures existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rPictures..."
-    git clone https://github.com/maisonnavejul/Ryvie-rPictures.git
+    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rPictures.git
     if [ $? -ne 0 ]; then
         echo "❌ Échec du clonage du dépôt. Arrêt du script."
         exit 1
@@ -690,7 +1327,7 @@ fi
 
 
 # 3. Se placer dans le dossier docker
-cd Ryvie-rPictures/docker
+cd "$APPS_DIR/Ryvie-rPictures/docker"
 
 # 4. Créer le fichier .env avec les variables nécessaires
 echo "📝 Création du fichier .env..."
@@ -719,7 +1356,7 @@ EOF
 echo "✅ Fichier .env créé."
 
 # 5. Lancer les services Immich en mode production
-echo "🚀 Lancement de Immich (rPictures) avec Docker Compose..."
+echo "🚀 Lancement de rPictures avec Docker Compose..."
 sudo docker compose -f docker-compose.ryvie.yml up -d
 
 # 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
@@ -740,21 +1377,40 @@ if [ "$RESPONSE" -eq 200 ]; then
 else
     echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
 fi
+
+# 7. Synchroniser les utilisateurs LDAP
+echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
+
+if [ "$RESPONSE" -eq 200 ]; then
+    echo "✅ Synchronisation LDAP réussie avec rPictures."
+else
+    echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
+fi
+
+# 7. Synchroniser les utilisateurs LDAP
+echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
+
+if [ "$RESPONSE" -eq 200 ]; then
+    echo "✅ Synchronisation LDAP réussie avec rPictures."
+else
+    echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
+fi
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 12: Installation de Ryvie rTransfer et synchronisation LDAP"
+echo "Étape 11: Installation de Ryvie rTransfer et synchronisation LDAP"
 echo "-----------------------------------------------------"
 
-# Aller dans le dossier Desktop/Bureau/Home (fallback centralisé)
-BASE_DIR="$(get_desktop_dir)"
-cd "$BASE_DIR" || { echo "❌ Impossible d'accéder à $BASE_DIR"; exit 1; }
+# Aller dans le dossier de travail /data/apps
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
 
 # 1. Cloner le dépôt si pas déjà présent
 if [ -d "Ryvie-rTransfer" ]; then
     echo "✅ Le dépôt Ryvie-rTransfer existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rTransfer..."
-    git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git || { echo "❌ Échec du clonage"; exit 1; }
+    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git || { echo "❌ Échec du clonage"; exit 1; }
 fi
 
 # 2. Se placer dans le dossier Ryvie-rTransfer
@@ -778,16 +1434,16 @@ echo "✅ rTransfer est lancé et prêt avec l’authentification LDAP."
 echo ""
 echo "-----------------------------------------------------"
 echo "-----------------------------------------------------"
-echo "Étape 13: Installation de Ryvie rDrop"
+echo "Étape 12: Installation de Ryvie rDrop"
 echo "-----------------------------------------------------"
 
-cd "$WORKDIR"
+cd "$APPS_DIR"
 
 if [ -d "Ryvie-rdrop" ]; then
     echo "✅ Le dépôt Ryvie-rdrop existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rdrop..."
-    git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
+    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
     if [ $? -ne 0 ]; then
         echo "❌ Échec du clonage du dépôt Ryvie-rdrop."
         exit 1
@@ -806,14 +1462,13 @@ else
     exit 1
 fi
 
-echo "📦 Suppression des conteneurs orphelins et anciens réseaux..."
+echo "📦 Suppression des conteneurs orphelins..."
 sudo docker compose down --remove-orphans
-sudo docker network prune -f
 sudo docker compose up -d
 
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 14: Installation et préparation de Rclone"
+echo "Étape 13: Installation et préparation de Rclone"
 echo "-----------------------------------------------------"
 
 # Installer/mettre à jour Rclone (méthode officielle)
@@ -832,21 +1487,27 @@ command -v rclone && ls -l /usr/bin/rclone || {
 # Version pour confirmation
 rclone version || true
 
-# Préparation du fichier de config (root)
-sudo mkdir -p /root/.config/rclone
-sudo touch /root/.config/rclone/rclone.conf
+# Rclone – config centralisée sous /data/config/rclone
+mkdir -p "$CONFIG_DIR/rclone"
+touch "$CONFIG_DIR/rclone/rclone.conf"
+chmod 600 "$CONFIG_DIR/rclone/rclone.conf"
+sudo chown root:root "$CONFIG_DIR/rclone/rclone.conf" || true
 
-# Permissions strictes
-sudo chown -R root:root /root/.config/rclone
-sudo chmod 700 /root/.config/rclone
-sudo chmod 600 /root/.config/rclone/rclone.conf
+# Option pratique (host uniquement) : symlink facultatif pour compatibilité
+sudo mkdir -p /root/.config
+if [ ! -L /root/.config/rclone ]; then
+  sudo rm -rf /root/.config/rclone 2>/dev/null || true
+  sudo ln -s "$CONFIG_DIR/rclone" /root/.config/rclone
+fi
 
-# Vérification du chemin utilisé par rclone (root)
-sudo rclone config file
+# Export pour les sessions shell (host)
+export RCLONE_CONFIG="$CONFIG_DIR/rclone/rclone.conf"
+grep -q 'RCLONE_CONFIG=' /etc/profile.d/ryvie_rclone.sh 2>/dev/null || \
+  echo 'export RCLONE_CONFIG=/data/config/rclone/rclone.conf' | sudo tee /etc/profile.d/ryvie_rclone.sh >/dev/null
 
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 15: Installation et lancement de Ryvie rDrive"
+echo "Étape 14: Installation et lancement de Ryvie rDrive"
 echo "-----------------------------------------------------"
 
 # Sécurités
@@ -860,10 +1521,10 @@ if [ -d "$SCRIPT_DIR/Ryvie-rDrive/tdrive" ]; then
 elif [ -d "$SCRIPT_DIR/tdrive" ]; then
   # cas où le script est lancé depuis le repo Ryvie-rDrive
   RDRIVE_DIR="$SCRIPT_DIR/tdrive"
-elif [ -n "${WORKDIR:-}" ] && [ -d "$WORKDIR/Ryvie-rDrive/tdrive" ]; then
-  RDRIVE_DIR="$WORKDIR/Ryvie-rDrive/tdrive"
+elif [ -d "$APPS_DIR/Ryvie-rDrive/tdrive" ]; then
+  RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
 else
-  echo "❌ Impossible de trouver le dossier 'tdrive' (cherché depuis $SCRIPT_DIR et \$WORKDIR)."
+  echo "❌ Impossible de trouver le dossier 'tdrive' (cherché depuis $SCRIPT_DIR et $APPS_DIR)."
   exit 1
 fi
 
@@ -939,48 +1600,134 @@ dc -f docker-compose.minimal.yml up -d
 
 echo "✅ rDrive est lancé."
 
-
 echo "-----------------------------------------------------"
-echo "Étape 16: Installation et lancement du Back-end-view"
+echo "Étape 15: Installation et lancement du Back-end-view et Front-end"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
-cd "$WORKDIR" || { echo "❌ WORKDIR introuvable: $WORKDIR"; exit 1; }
+cd "$APPS_DIR" || { echo "❌ APPS_DIR introuvable: $APPS_DIR"; exit 1; }
 
 # Vérifier la présence du dépôt Ryvie
 if [ ! -d "Ryvie" ]; then
-    echo "❌ Le dépôt 'Ryvie' est introuvable dans $WORKDIR. Assurez-vous qu'il a été cloné plus haut."
+    echo "❌ Le dépôt 'Ryvie' est introuvable dans $APPS_DIR. Assurez-vous qu'il a été cloné plus haut."
     exit 1
 fi
 
 # Aller dans le dossier Back-end-view
 cd "Ryvie/Back-end-view" || { echo "❌ Dossier 'Ryvie/Back-end-view' introuvable"; exit 1; }
 
-# Copier le fichier .env depuis Desktop (fallback Bureau)
-SRC_ENV="$HOME/Desktop/.env"
-if [ ! -f "$SRC_ENV" ]; then
-  ALT_ENV="$HOME/Bureau/.env"
-  if [ -f "$ALT_ENV" ]; then
-    SRC_ENV="$ALT_ENV"
-  fi
+
+  echo "⚠️ Aucun .env trouvé. Création d'un fichier .env par défaut sous $CONFIG_DIR/backend-view et symlink local..."
+  mkdir -p "$CONFIG_DIR/backend-view"
+  cat > "$CONFIG_DIR/backend-view/.env" << 'EOL'
+PORT=3002
+REDIS_URL=redis://127.0.0.1:6379
+ENCRYPTION_KEY=cQO6ti5443SHwT0+ERK61fAkse/F33cTIfHqDfskOZE=
+JWT_ENCRYPTION_KEY=l6cjqwghDHw+kqqvBXcGVZt8ctCbQEnJ9mBXS1V7Kjs=
+JWT_SECRET=8d168c01d550434ad8332a9aaad9eae15344d4ad0f5f41f4dca28d5d9c26f3ec1d87c8e2ea2eb78e0bd2b38085dd9a11a2699db18751199052f94a2ea14568fd
+# Configuration LDAP
+LDAP_URL=ldap://localhost:389
+LDAP_BIND_DN=cn=read-only,ou=users,dc=example,dc=org
+LDAP_BIND_PASSWORD=readpassword
+LDAP_USER_SEARCH_BASE=ou=users,dc=example,dc=org
+LDAP_GROUP_SEARCH_BASE=ou=users,dc=example,dc=org
+LDAP_USER_FILTER=(objectClass=inetOrgPerson)
+LDAP_GROUP_FILTER=(objectClass=groupOfNames)
+LDAP_ADMIN_GROUP=cn=admins,ou=users,dc=example,dc=org
+LDAP_USER_GROUP=cn=users,ou=users,dc=example,dc=org
+LDAP_GUEST_GROUP=cn=guests,ou=users,dc=example,dc=org
+
+# Security Configuration
+DEFAULT_EMAIL_DOMAIN=example.org
+AUTH_RATE_LIMIT_WINDOW_MS=900000
+AUTH_RATE_LIMIT_MAX_ATTEMPTS=5
+API_RATE_LIMIT_WINDOW_MS=900000
+API_RATE_LIMIT_MAX_REQUESTS=100
+BRUTE_FORCE_MAX_ATTEMPTS=5
+BRUTE_FORCE_BLOCK_DURATION_MS=900000
+ENABLE_SECURITY_LOGGING=true
+LOG_FAILED_ATTEMPTS=true
+
+# Session Security
+SESSION_TIMEOUT_MS=3600000
+MAX_CONCURRENT_SESSIONS=3
+
+# Production Security (set to true for production)
+FORCE_HTTPS=false
+ENABLE_HELMET=true
+ENABLE_CORS_CREDENTIALS=false
+EOL
+  # Créer un symlink local .env vers /data/config pour compatibilité
+  ln -sf "$CONFIG_DIR/backend-view/.env" .env
+  echo "✅ Fichier .env par défaut créé et lié: $CONFIG_DIR/backend-view/.env -> $(pwd)/.env"
+
+# Installer PM2 globalement si ce n'est pas déjà fait
+if ! command -v pm2 &> /dev/null; then
+    echo "📦 Installation de PM2..."
+    sudo npm install -g pm2 || { echo "❌ Échec de l'installation de PM2"; exit 1; }
+    # Configurer PM2 pour le démarrage automatique
+    sudo pm2 startup
 fi
 
-if [ -f "$SRC_ENV" ]; then
-  echo "📄 Copie de $SRC_ENV vers $(pwd)/.env"
-  cp "$SRC_ENV" .env
-else
-  echo "⚠️ Aucun .env trouvé sur Desktop ou Bureau. Étape de copie ignorée."
-fi
-
-# Installer les dépendances et lancer l'application
+# Installer les dépendances
 echo "📦 Installation des dépendances (npm install)"
-npm install || { echo "❌ npm install a échoué"; exit 1; }
+sudo -u "$EXEC_USER" npm install || { echo "❌ npm install a échoué"; exit 1; }
 
-echo "🚀 Lancement de Back-end-view (node index.js) au premier plan"
-echo "ℹ️ Les logs s'affichent ci-dessous. Appuyez sur Ctrl+C pour arrêter."
-mkdir -p logs
-# Afficher les logs en direct ET les sauvegarder dans un fichier
-node index.js 2>&1 | tee -a logs/backend-view.out
 
+# Démarrer ou redémarrer le service avec PM2
+echo "🚀 Démarrage du Back-end-view avec PM2..."
+pm2 describe backend-view > /dev/null 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "🔄 Redémarrage du service backend-view existant..."
+    pm2 restart backend-view --update-env
+else
+    echo "✨ Création d'un nouveau service PM2 pour backend-view..."
+    pm2 start index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
+fi
+
+# Sauvegarder la configuration PM2
+pm2 save
+
+# Configurer PM2 pour le démarrage automatique
+pm2 startup | tail -n 1 | bash
+
+echo "✅ Back-end-view est géré par PM2"
+echo "📝 Logs d'accès: $LOG_DIR/backend-view-out.log"
+echo "📝 Logs d'erreur: $LOG_DIR/backend-error.log"
+echo "ℹ️ Commandes utiles:"
+echo "   - Voir les logs: pm2 logs backend-view"
+echo "   - Arrêter: pm2 stop backend-view"
+echo "   - Redémarrer: pm2 restart backend-view"
+echo "   - Statut: pm2 status"
+
+# Frontend setup
+echo "🚀 Setting up frontend..."
+cd "$APPS_DIR/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
+
+echo "📦 Installing frontend dependencies..."
+sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
+
+echo "🚀 Starting frontend with PM2..."
+pm2 describe ryvie-frontend > /dev/null 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "🔄 Restarting existing ryvie-frontend service..."
+    pm2 restart ryvie-frontend --update-env
+else
+    echo "✨ Creating new PM2 service for ryvie-frontend..."
+    pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
+fi
+
+# Save PM2 configuration
+pm2 save
+
+echo "✅ Frontend is now managed by PM2"
+echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
+echo "ℹ️ Useful commands:"
+echo "   - View logs: pm2 logs ryvie-frontend"
+echo "   - Stop: pm2 stop ryvie-frontend"
+echo "   - Restart: pm2 restart ryvie-frontend"
+echo "   - Status: pm2 status"
 
 newgrp docker
