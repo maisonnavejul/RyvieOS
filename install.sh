@@ -1419,7 +1419,7 @@ pwd
 
 # 3. Lancer rTransfer avec docker-compose.local.yml
 echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.local.yml..."
-sudo docker compose -f docker-compose.yml up -d
+sudo docker compose -f docker-compose.local.yml up -d
 
 # 4. Vérification du démarrage sur le port 3000
 echo "⏳ Attente du démarrage de rTransfer (port 3000)..."
