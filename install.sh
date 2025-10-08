@@ -322,6 +322,7 @@ echo "----------------------------------------------------"
 echo "Etape intermédiaire : augmentation des permissions"
 echo "----------------------------------------------------"
 sudo usermod -aG sudo ryvie
+sudo chown -R ryvie:ryvie /data
 sudo chown -R "$EXEC_USER:$EXEC_USER" /data
 echo ""
 echo ""
@@ -1729,7 +1730,7 @@ fi
 
 # Save PM2 configuration
 pm2 save
-sudo chown -R ryvie:ryvie /data
+
 echo "✅ Frontend is now managed by PM2"
 echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
 echo "ℹ️ Useful commands:"
