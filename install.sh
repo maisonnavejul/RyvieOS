@@ -1729,7 +1729,7 @@ fi
 
 # Save PM2 configuration
 pm2 save
-
+sudo chown -R ryvie:ryvie /data
 echo "✅ Frontend is now managed by PM2"
 echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
 echo "ℹ️ Useful commands:"
