@@ -322,7 +322,6 @@ echo "----------------------------------------------------"
 echo "Etape intermédiaire : augmentation des permissions"
 echo "----------------------------------------------------"
 sudo usermod -aG sudo ryvie
-sudo chown -R ryvie:ryvie /data
 sudo chown -R "$EXEC_USER:$EXEC_USER" /data
 echo ""
 echo ""
