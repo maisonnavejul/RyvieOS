@@ -345,9 +345,6 @@ echo "Etape 3: Vérification des dépendances (mode strict pour cette section)"
 echo "----------------------------------------------------"
 # Activer le comportement "exit on error" uniquement pour l'installation des dépendances
 strict_enter
-# Installer les dépendances Node.js
-#npm install express cors http socket.io os dockerode ldapjs
-sudo -H -u "$EXEC_USER" npm install express cors socket.io dockerode diskusage systeminformation ldapjs dotenv jsonwebtoken os-utils --save
 install_pkgs gdisk parted build-essential python3 make g++ ldap-utils
 # Vérifier le code de retour de npm install (strict mode assure l'arrêt si npm install échoue)
 echo ""
