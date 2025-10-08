@@ -52,9 +52,10 @@ CONFIG_DIR="$DATA_ROOT/config"
 LOG_DIR="$DATA_ROOT/logs"
 DOCKER_ROOT="$DATA_ROOT/docker"
 PM2_HOME_DIR="$DATA_ROOT/pm2"
-sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR"
+RYVIE_ROOT="/opt/ryvie"
+sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR" "$RYVIE_ROOT"
 # Donner la main à l'utilisateur sur les répertoires non système
-sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" || true
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" "$RYVIE_ROOT" || true
 
 # PM2 directory and export (idempotent)
 export PM2_HOME="$PM2_HOME_DIR"
@@ -210,11 +211,15 @@ echo ""
 
 
 # Dépôts sur lesquels tu es invité
-REPOS=(
+# Ryvie apps dans /data/apps
+REPOS_APPS=(
     "Ryvie-rPictures"
     "Ryvie-rTransfer"
     "Ryvie-rdrop"
     "Ryvie-rDrive"
+)
+# Ryvie principal dans /opt/ryvie
+REPOS_OPT=(
     "Ryvie"
 )
 
@@ -252,20 +257,19 @@ else
     exit 1
 fi
 
-# Se positionner dans le répertoire des applications
-cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
-
 CREATED_DIRS=()
 
 log() {
     echo -e "$1"
 }
 OWNER="maisonnavejul"
-# Clonage des dépôts
-for repo in "${REPOS[@]}"; do
+
+# Clonage des dépôts dans /data/apps
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
+for repo in "${REPOS_APPS[@]}"; do
     if [[ ! -d "$repo" ]]; then
         repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
-        log "📥 Clonage du dépôt $repo (branche $BRANCH)..."
+        log "📥 Clonage du dépôt $repo dans $APPS_DIR (branche $BRANCH)..."
         sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
         if [[ $? -eq 0 ]]; then
             CREATED_DIRS+=("$APPS_DIR/$repo")
@@ -274,7 +278,24 @@ for repo in "${REPOS[@]}"; do
         fi
     else
         log "✅ Dépôt déjà cloné: $repo"
-        # Optionnel: tenter un pull sans échec bloquant
+        sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
+    fi
+done
+
+# Clonage de Ryvie dans /opt/ryvie
+cd "$RYVIE_ROOT" || { echo "❌ Impossible d'accéder à $RYVIE_ROOT"; exit 1; }
+for repo in "${REPOS_OPT[@]}"; do
+    if [[ ! -d "$repo" ]]; then
+        repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
+        log "📥 Clonage du dépôt $repo dans $RYVIE_ROOT (branche $BRANCH)..."
+        sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
+        if [[ $? -eq 0 ]]; then
+            CREATED_DIRS+=("$RYVIE_ROOT/$repo")
+        else
+            log "❌ Échec du clonage du dépôt : $repo"
+        fi
+    else
+        log "✅ Dépôt déjà cloné: $repo"
         sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
     fi
 done
@@ -531,8 +552,8 @@ readonly MANAGEMENT_URL="https://netbird.ryvie.fr"
 readonly SETUP_KEY="80E89E44-5EC4-42D5-A555-781CC1CC8CD1"
 readonly API_ENDPOINT="http://netbird.ryvie.fr:8088/api/register"
 readonly NETBIRD_INTERFACE="wt0"
-readonly TARGET_DIR="Ryvie/Ryvie-Front/src/config"
-RDRIVE_DIR="Ryvie-rDrive/tdrive"
+readonly TARGET_DIR="$RYVIE_ROOT/Ryvie/Ryvie-Front/src/config"
+RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
 
 # Persistance NetBird sous $DATA_ROOT/netbird (idempotent)
 
@@ -850,7 +871,7 @@ install_jq() {
 # Fonction pour générer le fichier .env
 generate_env_file() {
     local json_file="$CONFIG_DIR/netbird/netbird-data.json"
-    local rdrive_path="$APPS_DIR/$RDRIVE_DIR"
+    local rdrive_path="$RDRIVE_DIR"
     
     log_info "=== Début de la phase de configuration d'environnement ==="
     log_info "Génération de la configuration d'environnement..."
@@ -938,8 +959,8 @@ validate_prerequisites() {
         log_warning "Cannot create target directory structure: $TARGET_DIR"
     fi
     
-    if [ ! -d "$APPS_DIR/$(dirname "$RDRIVE_DIR")" ]; then
-        log_warning "RDrive directory structure not found: $APPS_DIR/$RDRIVE_DIR"
+    if [ ! -d "$(dirname "$RDRIVE_DIR")" ]; then
+        log_warning "RDrive directory structure not found: $RDRIVE_DIR"
     fi
 }
 
@@ -990,8 +1011,8 @@ main_env_setup() {
 main() {
     echo "🚀 Launching NetBird Configuration..."
     
-    # Use APPS_DIR as canonical apps root
-    cd "$APPS_DIR" || { log_error "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
+    # Use RYVIE_ROOT for NetBird config
+    cd "$RYVIE_ROOT" || { log_error "❌ Impossible d'accéder à $RYVIE_ROOT"; exit 1; }
     
     # Validate environment
     validate_prerequisites
@@ -1119,10 +1140,10 @@ echo ""
 echo "Etape 12: Configuration d'OpenLDAP avec Docker Compose"
 echo "-----------------------------------------------------"
 
-# 1. Créer le dossier ldap sous /data/apps et s'y positionner
-LDAP_DIR="$(get_work_dir)"
-mkdir -p "$LDAP_DIR/ldap"
-cd "$LDAP_DIR/ldap"
+# 1. Créer le dossier ldap sous /data/config et s'y positionner
+LDAP_DIR="$CONFIG_DIR/ldap"
+mkdir -p "$LDAP_DIR"
+cd "$LDAP_DIR"
 
 # 2. Créer le fichier docker-compose.yml pour lancer OpenLDAP
 cat <<'EOF' > docker-compose.yml
@@ -1512,18 +1533,8 @@ echo "-----------------------------------------------------"
 # Dossier du script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Déduction robuste du chemin de tdrive
-if [ -d "$SCRIPT_DIR/Ryvie-rDrive/tdrive" ]; then
-  RDRIVE_DIR="$SCRIPT_DIR/Ryvie-rDrive/tdrive"
-elif [ -d "$SCRIPT_DIR/tdrive" ]; then
-  # cas où le script est lancé depuis le repo Ryvie-rDrive
-  RDRIVE_DIR="$SCRIPT_DIR/tdrive"
-elif [ -d "$APPS_DIR/Ryvie-rDrive/tdrive" ]; then
-  RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
-else
-  echo "❌ Impossible de trouver le dossier 'tdrive' (cherché depuis $SCRIPT_DIR et $APPS_DIR)."
-  exit 1
-fi
+# Déduction robuste du chemin de tdrive (déjà défini plus haut)
+# RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive" est déjà défini
 
 cd "$RDRIVE_DIR"
 
@@ -1602,11 +1613,11 @@ echo "Étape 15: Installation et lancement du Back-end-view et Front-end"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
-cd "$APPS_DIR" || { echo "❌ APPS_DIR introuvable: $APPS_DIR"; exit 1; }
+cd "$RYVIE_ROOT" || { echo "❌ RYVIE_ROOT introuvable: $RYVIE_ROOT"; exit 1; }
 
 # Vérifier la présence du dépôt Ryvie
 if [ ! -d "Ryvie" ]; then
-    echo "❌ Le dépôt 'Ryvie' est introuvable dans $APPS_DIR. Assurez-vous qu'il a été cloné plus haut."
+    echo "❌ Le dépôt 'Ryvie' est introuvable dans $RYVIE_ROOT. Assurez-vous qu'il a été cloné plus haut."
     exit 1
 fi
 
@@ -1700,7 +1711,7 @@ echo "   - Statut: pm2 status"
 
 # Frontend setup
 echo "🚀 Setting up frontend..."
-cd "$APPS_DIR/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
+cd "$RYVIE_ROOT/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
 
 echo "📦 Installing frontend dependencies..."
 sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
