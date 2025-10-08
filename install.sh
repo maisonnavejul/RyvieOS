@@ -52,10 +52,23 @@ CONFIG_DIR="$DATA_ROOT/config"
 LOG_DIR="$DATA_ROOT/logs"
 DOCKER_ROOT="$DATA_ROOT/docker"
 PM2_HOME_DIR="$DATA_ROOT/pm2"
-RYVIE_ROOT="/opt/ryvie"
+RYVIE_ROOT="/opt"
 sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR" "$RYVIE_ROOT"
-# Donner la main à l'utilisateur sur les répertoires non système
-sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" "$RYVIE_ROOT" || true
+
+# Permissions sécurisées : NE JAMAIS chown -R sur DOCKER_ROOT pour éviter de casser les volumes
+# Seul le dossier racine /data (non récursif)
+sudo chown "$EXEC_USER:$EXEC_USER" "$DATA_ROOT" || true
+sudo chmod 755 "$DATA_ROOT" || true
+
+# Donner la main à l'utilisateur sur les répertoires non système (SANS toucher à Docker)
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" || true
+# Pour /opt, on attend que le dossier Ryvie soit créé pour ne pas chown tout /opt
+# Les permissions seront appliquées après le clonage du repo
+
+# Protection explicite : ne jamais modifier les permissions des volumes Docker
+if [ -d "$DOCKER_ROOT" ]; then
+  echo "ℹ️ Skip chown on $DOCKER_ROOT/* (volumes Docker protégés)"
+fi
 
 # PM2 directory and export (idempotent)
 export PM2_HOME="$PM2_HOME_DIR"
@@ -282,7 +295,7 @@ for repo in "${REPOS_APPS[@]}"; do
     fi
 done
 
-# Clonage de Ryvie dans /opt/ryvie
+# Clonage de Ryvie dans /opt (devient /opt/Ryvie)
 cd "$RYVIE_ROOT" || { echo "❌ Impossible d'accéder à $RYVIE_ROOT"; exit 1; }
 for repo in "${REPOS_OPT[@]}"; do
     if [[ ! -d "$repo" ]]; then
@@ -291,12 +304,17 @@ for repo in "${REPOS_OPT[@]}"; do
         sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
         if [[ $? -eq 0 ]]; then
             CREATED_DIRS+=("$RYVIE_ROOT/$repo")
+            # Appliquer les permissions sur le dossier cloné
+            sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo"
+            log "✅ Permissions appliquées sur $RYVIE_ROOT/$repo"
         else
             log "❌ Échec du clonage du dépôt : $repo"
         fi
     else
         log "✅ Dépôt déjà cloné: $repo"
         sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
+        # S'assurer que les permissions sont correctes
+        sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo" || true
     fi
 done
 
@@ -322,7 +340,10 @@ echo "----------------------------------------------------"
 echo "Etape intermédiaire : augmentation des permissions"
 echo "----------------------------------------------------"
 sudo usermod -aG sudo ryvie
-sudo chown -R "$EXEC_USER:$EXEC_USER" /data
+
+# ⚠️ NE JAMAIS faire chown -R /data (casse les volumes Docker)
+# Les permissions sont déjà définies au début du script de manière ciblée
+echo "✅ Permissions configurées de manière sécurisée (Docker volumes protégés)"
 echo ""
 echo ""
 echo "------------------------------------------"
@@ -526,6 +547,37 @@ if getent group docker >/dev/null 2>&1; then
   sudo usermod -aG docker ryvie || true
   echo "ℹ️ Déconnecte/reconnecte-toi (ou 'newgrp docker') pour activer l'appartenance au groupe docker."
 fi
+
+echo ""
+echo "----------------------------------------------------"
+echo "🔧 Fonction de réparation des permissions Docker (si nécessaire)"
+echo "----------------------------------------------------"
+# Cette fonction permet de réparer les permissions des volumes Docker
+# si vous avez accidentellement fait un chown -R sur /data
+repair_docker_volumes() {
+  echo "⚙️ Réparation des permissions des volumes Docker sensibles..."
+  
+  # Prometheus (UID 65534:65534 = nobody)
+  if docker volume ls | grep -q "prometheus-data"; then
+    echo "  🔹 Réparation Prometheus..."
+    docker run --rm -v immich-prod_prometheus-data:/prometheus alpine \
+      sh -c 'chown -R 65534:65534 /prometheus && chmod -R u+rwX,g+rwX /prometheus' 2>/dev/null || \
+      echo "    ⚠️ Volume Prometheus non trouvé ou déjà OK"
+  fi
+  
+  # PostgreSQL rPictures (généralement UID 999:999)
+  if docker volume ls | grep -q "pgvecto-rs"; then
+    echo "  🔹 Réparation PostgreSQL rPictures..."
+    docker run --rm -v app-rpictures_pgvecto-rs:/var/lib/postgresql/data alpine \
+      sh -c 'chown -R 999:999 /var/lib/postgresql/data' 2>/dev/null || \
+      echo "    ⚠️ Volume PostgreSQL non trouvé ou déjà OK"
+  fi
+  
+  echo "✅ Réparation des volumes terminée"
+}
+
+# Décommenter la ligne suivante UNIQUEMENT si vous devez réparer les permissions
+# repair_docker_volumes
 
 strict_exit
 
@@ -1613,16 +1665,10 @@ echo "Étape 15: Installation et lancement du Back-end-view et Front-end"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
-cd "$RYVIE_ROOT" || { echo "❌ RYVIE_ROOT introuvable: $RYVIE_ROOT"; exit 1; }
-
-# Vérifier la présence du dépôt Ryvie
-if [ ! -d "Ryvie" ]; then
-    echo "❌ Le dépôt 'Ryvie' est introuvable dans $RYVIE_ROOT. Assurez-vous qu'il a été cloné plus haut."
-    exit 1
-fi
+cd "$RYVIE_ROOT/Ryvie" || { echo "❌ RYVIE_ROOT/Ryvie introuvable: $RYVIE_ROOT/Ryvie"; exit 1; }
 
 # Aller dans le dossier Back-end-view
-cd "Ryvie/Back-end-view" || { echo "❌ Dossier 'Ryvie/Back-end-view' introuvable"; exit 1; }
+cd "Back-end-view" || { echo "❌ Dossier 'Back-end-view' introuvable"; exit 1; }
 
 
   echo "⚠️ Aucun .env trouvé. Création d'un fichier .env par défaut sous $CONFIG_DIR/backend-view et symlink local..."
@@ -1737,5 +1783,40 @@ echo "   - View logs: pm2 logs ryvie-frontend"
 echo "   - Stop: pm2 stop ryvie-frontend"
 echo "   - Restart: pm2 restart ryvie-frontend"
 echo "   - Status: pm2 status"
+
+echo ""
+echo "======================================================"
+echo "🧪 Tests de permissions (optionnel)"
+echo "======================================================"
+echo ""
+echo "Pour vérifier que les permissions sont correctes, exécutez :"
+echo ""
+echo "# Tests d'écriture dans les dossiers host (doivent réussir)"
+echo "sudo -u $EXEC_USER bash -lc 'touch /data/apps/.write_test && rm /data/apps/.write_test'"
+echo "sudo -u $EXEC_USER bash -lc 'touch /data/config/.write_test && rm /data/config/.write_test'"
+echo "sudo -u $EXEC_USER bash -lc 'touch /data/logs/.write_test && rm /data/logs/.write_test'"
+echo "sudo -u $EXEC_USER bash -lc 'touch /opt/Ryvie/.write_test && rm /opt/Ryvie/.write_test'"
+echo ""
+echo "# Vérifier l'ownership des volumes Docker (NE PAS modifier)"
+echo "ls -ld /data/docker/volumes/immich-prod_prometheus-data/_data 2>/dev/null || echo 'Volume Prometheus non trouvé'"
+echo "ls -ld /data/docker/volumes/app-rpictures_pgvecto-rs/_data 2>/dev/null || echo 'Volume PostgreSQL non trouvé'"
+echo ""
+echo "======================================================"
+echo "✅ Installation Ryvie OS terminée !"
+echo "======================================================"
+echo ""
+echo "📍 Architecture créée :"
+echo "   /opt/Ryvie/               → Application principale (Back-end-view, Front-end)"
+echo "   /data/apps/               → Applications Ryvie (rPictures, rDrive, rdrop, rTransfer)"
+echo "   /data/apps/portainer/     → Données Portainer"
+echo "   /data/config/ldap/        → Configuration OpenLDAP"
+echo "   /data/config/             → Configurations (netbird, rdrive, backend-view, rclone)"
+echo "   /data/logs/               → Logs applicatifs"
+echo "   /data/docker/             → Volumes Docker (PROTÉGÉS - ne pas modifier)"
+echo ""
+echo "⚠️  IMPORTANT : Si vous rencontrez des problèmes de permissions Docker,"
+echo "    décommentez la ligne 'repair_docker_volumes' dans la section Docker du script"
+echo "    et relancez uniquement cette partie."
+echo ""
 
 newgrp docker
