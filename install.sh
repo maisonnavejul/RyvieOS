@@ -53,7 +53,10 @@ LOG_DIR="$DATA_ROOT/logs"
 DOCKER_ROOT="$DATA_ROOT/docker"
 PM2_HOME_DIR="$DATA_ROOT/pm2"
 RYVIE_ROOT="/opt"
-sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR" "$RYVIE_ROOT"
+IMAGES_DIR="$DATA_ROOT/images"
+USERPREF_DIR="$CONFIG_DIR/user-preferences"
+
+sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR" "$RYVIE_ROOT" "$IMAGES_DIR/backgrounds" "$USERPREF_DIR"
 
 # Permissions sécurisées : NE JAMAIS chown -R sur DOCKER_ROOT pour éviter de casser les volumes
 # Seul le dossier racine /data (non récursif)
@@ -61,7 +64,7 @@ sudo chown "$EXEC_USER:$EXEC_USER" "$DATA_ROOT" || true
 sudo chmod 755 "$DATA_ROOT" || true
 
 # Donner la main à l'utilisateur sur les répertoires non système (SANS toucher à Docker)
-sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" || true
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" "$IMAGES_DIR" || true
 # Pour /opt, on attend que le dossier Ryvie soit créé pour ne pas chown tout /opt
 # Les permissions seront appliquées après le clonage du repo
 
@@ -296,15 +299,21 @@ for repo in "${REPOS_APPS[@]}"; do
 done
 
 # Clonage de Ryvie dans /opt (devient /opt/Ryvie)
+# Créer le dossier parent avec les bonnes permissions pour permettre le clonage
+for repo in "${REPOS_OPT[@]}"; do
+    sudo mkdir -p "$RYVIE_ROOT/$repo"
+    sudo chown "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo"
+done
+
 cd "$RYVIE_ROOT" || { echo "❌ Impossible d'accéder à $RYVIE_ROOT"; exit 1; }
 for repo in "${REPOS_OPT[@]}"; do
-    if [[ ! -d "$repo" ]]; then
+    if [[ ! -d "$repo/.git" ]]; then
         repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
         log "📥 Clonage du dépôt $repo dans $RYVIE_ROOT (branche $BRANCH)..."
         sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
         if [[ $? -eq 0 ]]; then
             CREATED_DIRS+=("$RYVIE_ROOT/$repo")
-            # Appliquer les permissions sur le dossier cloné
+            # Appliquer les permissions récursives sur le dossier cloné
             sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo"
             log "✅ Permissions appliquées sur $RYVIE_ROOT/$repo"
         else
