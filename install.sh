@@ -1586,88 +1586,75 @@ grep -q 'RCLONE_CONFIG=' /etc/profile.d/ryvie_rclone.sh 2>/dev/null || \
 
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 14: Installation et lancement de Ryvie rDrive"
+echo "Étape 14: Installation et lancement de Ryvie rDrive (compose unique)"
 echo "-----------------------------------------------------"
 
-# Sécurités
-# (removed duplicate `set -euo pipefail` here; strict mode already enabled above)
-# Dossier du script
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Dossier rDrive
+RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
 
-# Déduction robuste du chemin de tdrive (déjà défini plus haut)
-# RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive" est déjà défini
+# 1) Vérifier la présence du compose et du .env
+cd "$RDRIVE_DIR" || { echo "❌ Impossible d'accéder à $RDRIVE_DIR"; exit 1; }
 
-cd "$RDRIVE_DIR"
-
-# --- NEW: wrapper Docker (utilise sudo si nécessaire) + start du service ---
-if docker info >/dev/null 2>&1; then
-  DOCKER="docker"
-else
-  DOCKER="sudo docker"
-fi
-d() { $DOCKER "$@" ; }
-dc() { $DOCKER compose "$@" ; }
-# Assure que le daemon tourne (silencieux si déjà actif)
-sudo systemctl start docker 2>/dev/null || true
-
-# Fonction utilitaire pour attendre un conteneur Docker
-wait_cid() {
-  local cid="$1"
-  local name state health
-  name="$(d inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##')"
-  echo "⏳ Attente du conteneur $name ..."
-  while :; do
-    state="$(d inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo 'unknown')"
-    health="$(d inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || true)"
-    if [[ "$state" == "running" && ( -z "$health" || "$health" == "healthy" ) ]]; then
-      echo "✅ $name prêt."
-      break
-    fi
-    sleep 2
-    echo "   …"
-  done
-}
-
-# 1. Lancer OnlyOffice
-echo "🔹 Démarrage de OnlyOffice..."
-dc -f docker-compose.dev.onlyoffice.yml \
-   -f docker-compose.onlyoffice-connector-override.yml \
-   up -d
-
-# 1b. Attendre que tous les conteneurs OnlyOffice soient prêts
-OO_CIDS=$(dc -f docker-compose.dev.onlyoffice.yml \
-             -f docker-compose.onlyoffice-connector-override.yml \
-             ps -q)
-
-if [ -z "$OO_CIDS" ]; then
-  echo "❌ Aucun conteneur détecté pour la stack OnlyOffice."
+if [ ! -f docker-compose.yml ]; then
+  echo "❌ docker-compose.yml introuvable dans $RDRIVE_DIR"
+  echo "   Place le fichier docker-compose.yml ici puis relance."
   exit 1
 fi
 
-for cid in $OO_CIDS; do
-  wait_cid "$cid"
-done
+# Le .env front/back est généré plus haut (NetBird → generate_env_file)
+if [ ! -f "$CONFIG_DIR/rdrive/.env" ]; then
+  echo "⚠️ /data/config/rdrive/.env introuvable — tentative de régénération…"
+  generate_env_file || {
+    echo "❌ Impossible de générer /data/config/rdrive/.env"
+    exit 1
+  }
+fi
 
-# 2. Build et démarrage du service node
-echo "🔹 Build du service node..."
-dc -f docker-compose.minimal.yml build node
+# (Optionnel) s'assurer que rclone est montable au bon chemin
+if ! [ -x /usr/bin/rclone ]; then
+  RBIN="$(command -v rclone || true)"
+  if [ -n "$RBIN" ]; then
+    sudo ln -sf "$RBIN" /usr/bin/rclone
+  fi
+fi
 
-echo "🔹 Démarrage du service node..."
-dc -f docker-compose.minimal.yml up -d node
+# 2) Lancement unique
+echo "🚀 Démarrage de la stack rDrive…"
+sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" pull || true
+sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" up -d --build
 
-# 2b. Attendre que node soit prêt
-NODE_CID=$(dc -f docker-compose.minimal.yml ps -q node)
-wait_cid "$NODE_CID"
+# 3) Attentes/health (best-effort)
+echo "⏳ Attente des services (mongo, onlyoffice, node, frontend)…"
+wait_for_service() {
+  local svc="$1"
+  local retries=60
+  while [ $retries -gt 0 ]; do
+    if sudo docker compose ps --format json | jq -e ".[] | select(.Service==\"$svc\") | .State==\"running\"" >/dev/null 2>&1; then
+      # si health est défini, essaye de lire
+      if sudo docker inspect --format='{{json .State.Health}}' "$(sudo docker compose ps -q "$svc")" 2>/dev/null | jq -e '.Status=="healthy"' >/dev/null 2>&1; then
+        echo "✅ $svc healthy"
+        return 0
+      fi
+      # sinon, running suffit
+      echo "✅ $svc en cours d'exécution"
+      return 0
+    fi
+    sleep 2
+    retries=$((retries-1))
+  done
+  echo "⚠️ Timeout d’attente pour $svc"
+  return 1
+}
 
-# 3. Lancer frontend
-echo "🔹 Démarrage du service frontend..."
-dc -f docker-compose.minimal.yml up -d frontend
+wait_for_service mongo || true
+wait_for_service onlyoffice || true
+wait_for_service node || true
+wait_for_service frontend || true
+wait_for_service onlyoffice-connector || true   # pas de healthcheck défini dans ton compose
 
-# 4. Démarrer le reste du minimal
-echo "🔹 Démarrage du reste des services (mongo, etc.)..."
-dc -f docker-compose.minimal.yml up -d
+echo "✅ rDrive est lancé via docker-compose unique."
+echo "   Frontend accessible (par défaut) sur http://localhost:3010"
 
-echo "✅ rDrive est lancé."
 
 echo "-----------------------------------------------------"
 echo "Étape 15: Installation et lancement du Back-end-view et Front-end"
