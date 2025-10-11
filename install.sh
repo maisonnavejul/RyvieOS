@@ -1646,11 +1646,6 @@ wait_for_service() {
   return 1
 }
 
-wait_for_service mongo || true
-wait_for_service onlyoffice || true
-wait_for_service node || true
-wait_for_service frontend || true
-wait_for_service onlyoffice-connector || true   # pas de healthcheck défini dans ton compose
 
 echo "✅ rDrive est lancé via docker-compose unique."
 echo "   Frontend accessible (par défaut) sur http://localhost:3010"
