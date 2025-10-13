@@ -1656,10 +1656,16 @@ echo "Étape 15: Installation et lancement du Back-end-view et Front-end"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
-cd "$RYVIE_ROOT/Ryvie" || { echo "❌ RYVIE_ROOT/Ryvie introuvable: $RYVIE_ROOT/Ryvie"; exit 1; }
+cd "$RYVIE_ROOT" || { echo "❌ RYVIE_ROOT introuvable: $RYVIE_ROOT"; exit 1; }
+
+# Vérifier la présence du dépôt Ryvie
+if [ ! -d "Ryvie" ]; then
+    echo "❌ Le dépôt 'Ryvie' est introuvable dans $RYVIE_ROOT. Assurez-vous qu'il a été cloné plus haut."
+    exit 1
+fi
 
 # Aller dans le dossier Back-end-view
-cd "Back-end-view" || { echo "❌ Dossier 'Back-end-view' introuvable"; exit 1; }
+cd "Ryvie/Back-end-view" || { echo "❌ Dossier 'Ryvie/Back-end-view' introuvable"; exit 1; }
 
 
   echo "⚠️ Aucun .env trouvé. Création d'un fichier .env par défaut sous $CONFIG_DIR/backend-view et symlink local..."
@@ -1710,6 +1716,8 @@ EOL
 if ! command -v pm2 &> /dev/null; then
     echo "📦 Installation de PM2..."
     sudo npm install -g pm2 || { echo "❌ Échec de l'installation de PM2"; exit 1; }
+    # Configurer PM2 pour le démarrage automatique
+    sudo pm2 startup
 fi
 
 # Installer les dépendances
@@ -1719,32 +1727,30 @@ sudo -u "$EXEC_USER" npm install || { echo "❌ npm install a échoué"; exit 1;
 
 # Démarrer ou redémarrer le service avec PM2
 echo "🚀 Démarrage du Back-end-view avec PM2..."
-sudo -u "$EXEC_USER" pm2 describe backend-view > /dev/null 2>&1
+pm2 describe backend-view > /dev/null 2>&1
 
 if [ $? -eq 0 ]; then
     echo "🔄 Redémarrage du service backend-view existant..."
-    sudo -u "$EXEC_USER" pm2 restart backend-view --update-env
+    pm2 restart backend-view --update-env
 else
     echo "✨ Création d'un nouveau service PM2 pour backend-view..."
-    sudo -u "$EXEC_USER" pm2 start index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
+    pm2 start index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
 fi
 
 # Sauvegarder la configuration PM2
-sudo -u "$EXEC_USER" pm2 save
+pm2 save
 
-# Configurer PM2 pour le démarrage automatique (une seule fois)
-if [ ! -f /etc/systemd/system/pm2-$EXEC_USER.service ]; then
-    sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u "$EXEC_USER" --hp "/home/$EXEC_USER" | tail -n 1 | bash
-fi
+# Configurer PM2 pour le démarrage automatique
+pm2 startup | tail -n 1 | bash
 
 echo "✅ Back-end-view est géré par PM2"
 echo "📝 Logs d'accès: $LOG_DIR/backend-view-out.log"
 echo "📝 Logs d'erreur: $LOG_DIR/backend-error.log"
 echo "ℹ️ Commandes utiles:"
-echo "   - Voir les logs: sudo -u $EXEC_USER pm2 logs backend-view"
-echo "   - Arrêter: sudo -u $EXEC_USER pm2 stop backend-view"
-echo "   - Redémarrer: sudo -u $EXEC_USER pm2 restart backend-view"
-echo "   - Statut: sudo -u $EXEC_USER pm2 status"
+echo "   - Voir les logs: pm2 logs backend-view"
+echo "   - Arrêter: pm2 stop backend-view"
+echo "   - Redémarrer: pm2 restart backend-view"
+echo "   - Statut: pm2 status"
 
 # Frontend setup
 echo "🚀 Setting up frontend..."
@@ -1754,18 +1760,18 @@ echo "📦 Installing frontend dependencies..."
 sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
 
 echo "🚀 Starting frontend with PM2..."
-sudo -u "$EXEC_USER" pm2 describe ryvie-frontend > /dev/null 2>&1
+pm2 describe ryvie-frontend > /dev/null 2>&1
 
 if [ $? -eq 0 ]; then
     echo "🔄 Restarting existing ryvie-frontend service..."
-    sudo -u "$EXEC_USER" pm2 restart ryvie-frontend --update-env
+    pm2 restart ryvie-frontend --update-env
 else
     echo "✨ Creating new PM2 service for ryvie-frontend..."
-    sudo -u "$EXEC_USER" pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
+    pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
 fi
 
 # Save PM2 configuration
-sudo -u "$EXEC_USER" pm2 save
+pm2 save
 
 echo "✅ Frontend is now managed by PM2"
 echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
