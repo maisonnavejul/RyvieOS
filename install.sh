@@ -1,7 +1,10 @@
-
 #!/usr/bin/env bash
 # Détecter l’utilisateur réel même si le script est lancé avec sudo
 EXEC_USER="${SUDO_USER:-$USER}"
+EXEC_HOME="$(getent passwd "$EXEC_USER" | cut -d: -f6)"
+if [ -z "$EXEC_HOME" ]; then
+    EXEC_HOME="/home/$EXEC_USER"
+fi
 
 echo ""
 echo "
@@ -51,12 +54,11 @@ APPS_DIR="$DATA_ROOT/apps"
 CONFIG_DIR="$DATA_ROOT/config"
 LOG_DIR="$DATA_ROOT/logs"
 DOCKER_ROOT="$DATA_ROOT/docker"
-PM2_HOME_DIR="$DATA_ROOT/pm2"
 RYVIE_ROOT="/opt"
 IMAGES_DIR="$DATA_ROOT/images"
 USERPREF_DIR="$CONFIG_DIR/user-preferences"
 
-sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR" "$RYVIE_ROOT" "$IMAGES_DIR/backgrounds" "$USERPREF_DIR" "$DATA_ROOT/snapshot"
+sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$RYVIE_ROOT" "$IMAGES_DIR/backgrounds" "$USERPREF_DIR" "$DATA_ROOT/snapshot"
 
 # Permissions sécurisées : NE JAMAIS chown -R sur DOCKER_ROOT pour éviter de casser les volumes
 # Seul le dossier racine /data (non récursif)
@@ -64,7 +66,7 @@ sudo chown "$EXEC_USER:$EXEC_USER" "$DATA_ROOT" || true
 sudo chmod 755 "$DATA_ROOT" || true
 
 # Donner la main à l'utilisateur sur les répertoires non système (SANS toucher à Docker)
-sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" "$IMAGES_DIR" || true
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$IMAGES_DIR" || true
 # Pour /opt, on attend que le dossier Ryvie soit créé pour ne pas chown tout /opt
 # Les permissions seront appliquées après le clonage du repo
 
@@ -73,9 +75,8 @@ if [ -d "$DOCKER_ROOT" ]; then
   echo "ℹ️ Skip chown on $DOCKER_ROOT/* (volumes Docker protégés)"
 fi
 
-# PM2 directory and export (idempotent)
-export PM2_HOME="$PM2_HOME_DIR"
-echo 'export PM2_HOME="/data/pm2"' | sudo tee -a /etc/profile.d/ryvie_pm2.sh >/dev/null
+# PM2 utilise son répertoire par défaut (~/.pm2)
+sudo rm -f /etc/profile.d/ryvie_pm2.sh
 
 # rclone configuration path under /data/config
 export RCLONE_CONFIG="$CONFIG_DIR/rclone/rclone.conf"
@@ -87,6 +88,7 @@ sudo chmod 600 "$RCLONE_CONFIG" || true
 get_work_dir() {
     printf '%s' "$APPS_DIR"
 }
+
 #vérification que /data est bien BTRFS
 if [[ "$(findmnt -no FSTYPE "$DATA_ROOT")" != "btrfs" ]]; then
   echo "❌ $DATA_ROOT n'est pas en Btrfs — impossible de créer des sous-volumes."
@@ -97,7 +99,7 @@ echo "----------------------------------------------------"
 echo "Étape 0: Création des sous-volumes BTRFS"
 echo "----------------------------------------------------"
 # --- Convertir les répertoires clés en sous-volumes Btrfs (idempotent) ---
-for dir in "$APPS_DIR" "$CONFIG_DIR" "$DOCKER_ROOT" "$LOG_DIR" "$PM2_HOME_DIR" "$IMAGES_DIR" "$DATA_ROOT/netbird"; do
+for dir in "$APPS_DIR" "$CONFIG_DIR" "$DOCKER_ROOT" "$LOG_DIR" "$IMAGES_DIR" "$DATA_ROOT/netbird"; do
   if [[ -d "$dir" ]]; then
     if ! sudo btrfs subvolume show "$dir" &>/dev/null; then
       echo "🧱 Création du sous-volume Btrfs : $dir"
@@ -257,7 +259,6 @@ echo "------------------------------------------"
 echo " Vérification et installation de npm "
 echo "------------------------------------------"
 echo ""
-
 
 # Dépôts sur lesquels tu es invité
 # Ryvie apps dans /data/apps
@@ -1715,8 +1716,6 @@ LDAP_BIND_DN=cn=read-only,ou=users,dc=example,dc=org
 LDAP_BIND_PASSWORD=readpassword
 LDAP_USER_SEARCH_BASE=ou=users,dc=example,dc=org
 LDAP_GROUP_SEARCH_BASE=ou=users,dc=example,dc=org
-LDAP_USER_FILTER=(objectClass=inetOrgPerson)
-LDAP_GROUP_FILTER=(objectClass=groupOfNames)
 LDAP_ADMIN_GROUP=cn=admins,ou=users,dc=example,dc=org
 LDAP_USER_GROUP=cn=users,ou=users,dc=example,dc=org
 LDAP_GUEST_GROUP=cn=guests,ou=users,dc=example,dc=org
@@ -1750,7 +1749,7 @@ if ! command -v pm2 &> /dev/null; then
     echo "📦 Installation de PM2..."
     sudo npm install -g pm2 || { echo "❌ Échec de l'installation de PM2"; exit 1; }
     # Configurer PM2 pour le démarrage automatique
-    sudo pm2 startup
+    sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
 fi
 
 # Installer les dépendances
@@ -1760,21 +1759,19 @@ sudo -u "$EXEC_USER" npm install || { echo "❌ npm install a échoué"; exit 1;
 
 # Démarrer ou redémarrer le service avec PM2
 echo "🚀 Démarrage du Back-end-view avec PM2..."
-pm2 describe backend-view > /dev/null 2>&1
-
-if [ $? -eq 0 ]; then
+if sudo -u "$EXEC_USER" pm2 describe backend-view > /dev/null 2>&1; then
     echo "🔄 Redémarrage du service backend-view existant..."
-    pm2 restart backend-view --update-env
+    sudo -u "$EXEC_USER" pm2 restart backend-view --update-env
 else
     echo "✨ Création d'un nouveau service PM2 pour backend-view..."
-    pm2 start index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
+    sudo -u "$EXEC_USER" pm2 start index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
 fi
 
 # Sauvegarder la configuration PM2
-pm2 save
+sudo -u "$EXEC_USER" pm2 save
 
 # Configurer PM2 pour le démarrage automatique
-pm2 startup | tail -n 1 | bash
+sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
 
 echo "✅ Back-end-view est géré par PM2"
 echo "📝 Logs d'accès: $LOG_DIR/backend-view-out.log"
@@ -1783,6 +1780,7 @@ echo "ℹ️ Commandes utiles:"
 echo "   - Voir les logs: pm2 logs backend-view"
 echo "   - Arrêter: pm2 stop backend-view"
 echo "   - Redémarrer: pm2 restart backend-view"
+echo "   - Arrêter tout: pm2 stop all"
 echo "   - Statut: pm2 status"
 
 # Frontend setup
@@ -1793,26 +1791,25 @@ echo "📦 Installing frontend dependencies..."
 sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
 
 echo "🚀 Starting frontend with PM2..."
-pm2 describe ryvie-frontend > /dev/null 2>&1
-
-if [ $? -eq 0 ]; then
+if sudo -u "$EXEC_USER" pm2 describe ryvie-frontend > /dev/null 2>&1; then
     echo "🔄 Restarting existing ryvie-frontend service..."
-    pm2 restart ryvie-frontend --update-env
+    sudo -u "$EXEC_USER" pm2 restart ryvie-frontend --update-env
 else
     echo "✨ Creating new PM2 service for ryvie-frontend..."
-    pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
+    sudo -u "$EXEC_USER" pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
 fi
 
 # Save PM2 configuration
-pm2 save
+sudo -u "$EXEC_USER" pm2 save
 
 echo "✅ Frontend is now managed by PM2"
 echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
 echo "ℹ️ Useful commands:"
-echo "   - View logs: sudo -u $EXEC_USER pm2 logs ryvie-frontend"
-echo "   - Stop: sudo -u $EXEC_USER pm2 stop ryvie-frontend"
-echo "   - Restart: sudo -u $EXEC_USER pm2 restart ryvie-frontend"
-echo "   - Status: sudo -u $EXEC_USER pm2 status"
+echo "   - View logs: pm2 logs ryvie-frontend"
+echo "   - Stop: pm2 stop ryvie-frontend"
+echo "   - Restart: pm2 restart ryvie-frontend"
+echo "   - Stop everything: pm2 stop all"
+echo "   - Status: pm2 status"
 
 echo ""
 echo "======================================================"
