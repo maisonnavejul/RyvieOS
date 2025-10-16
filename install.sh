@@ -56,7 +56,7 @@ RYVIE_ROOT="/opt"
 IMAGES_DIR="$DATA_ROOT/images"
 USERPREF_DIR="$CONFIG_DIR/user-preferences"
 
-sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR" "$RYVIE_ROOT" "$IMAGES_DIR/backgrounds" "$USERPREF_DIR"
+sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR" "$RYVIE_ROOT" "$IMAGES_DIR/backgrounds" "$USERPREF_DIR" "$DATA_ROOT/snapshot"
 
 # Permissions sécurisées : NE JAMAIS chown -R sur DOCKER_ROOT pour éviter de casser les volumes
 # Seul le dossier racine /data (non récursif)
@@ -87,6 +87,39 @@ sudo chmod 600 "$RCLONE_CONFIG" || true
 get_work_dir() {
     printf '%s' "$APPS_DIR"
 }
+#vérification que /data est bien BTRFS
+if [[ "$(findmnt -no FSTYPE "$DATA_ROOT")" != "btrfs" ]]; then
+  echo "❌ $DATA_ROOT n'est pas en Btrfs — impossible de créer des sous-volumes."
+  exit 1
+fi
+
+echo "----------------------------------------------------"
+echo "Étape 0: Création des sous-volumes BTRFS"
+echo "----------------------------------------------------"
+# --- Convertir les répertoires clés en sous-volumes Btrfs (idempotent) ---
+for dir in "$APPS_DIR" "$CONFIG_DIR" "$DOCKER_ROOT" "$LOG_DIR" "$PM2_HOME_DIR" "$IMAGES_DIR" "$DATA_ROOT/netbird"; do
+  if [[ -d "$dir" ]]; then
+    if ! sudo btrfs subvolume show "$dir" &>/dev/null; then
+      echo "🧱 Création du sous-volume Btrfs : $dir"
+      TMP="${dir}.tmp-$$"
+      sudo mv "$dir" "$TMP"
+      sudo btrfs subvolume create "$dir"
+      sudo cp -a --reflink=always "$TMP"/. "$dir"/
+      sudo rm -rf "$TMP"
+    else
+      echo "✅ $dir est déjà un sous-volume"
+    fi
+  fi
+done
+
+# Dossier snapshot isolé (ne sera jamais inclus dans les snapshots)
+if [[ ! -d "$DATA_ROOT/snapshot" ]] || ! sudo btrfs subvolume show "$DATA_ROOT/snapshot" &>/dev/null; then
+  sudo btrfs subvolume create "$DATA_ROOT/snapshot"
+  echo "📦 Sous-volume snapshot créé : $DATA_ROOT/snapshot"
+fi
+
+
+
 
 # =====================================================
 # Étape 1: Vérification des prérequis système
