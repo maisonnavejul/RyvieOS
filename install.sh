@@ -1485,7 +1485,7 @@ sudo docker compose -f docker-compose.yml up -d
 
 # 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
 echo "⏳ Attente du démarrage d'Immich (port 2283)..."
-until curl -s http://localhost:2283 > /dev/null; do
+until curl -s http://localhost:3013 > /dev/null; do
     sleep 2
     echo -n "."
 done
