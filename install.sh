@@ -1484,7 +1484,7 @@ echo "🚀 Lancement de rPictures avec Docker Compose..."
 sudo docker compose -f docker-compose.yml up -d
 
 # 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
-echo "⏳ Attente du démarrage d'Immich (port 2283)..."
+echo "⏳ Attente du démarrage d'Immich (port 3013)..."
 until curl -s http://localhost:3013 > /dev/null; do
     sleep 2
     echo -n "."
