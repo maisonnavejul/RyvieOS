@@ -1464,6 +1464,17 @@ DB_PASSWORD=postgres
 # Internal DB vars
 DB_USERNAME=postgres
 DB_DATABASE_NAME=immich
+
+LDAP_URL= ldap://openldap:1389
+LDAP_BIND_DN=cn=admin,dc=example,dc=org
+LDAP_BIND_PASSWORD=adminpassword
+LDAP_BASE_DN=dc=example,dc=org
+LDAP_USER_BASE_DN=ou=users,dc=example,dc=org
+LDAP_USER_FILTER=(objectClass=inetOrgPerson)
+LDAP_ADMIN_GROUP=admins
+LDAP_EMAIL_ATTRIBUTE=mail
+LDAP_NAME_ATTRIBUTE=cn
+LDAP_PASSWORD_ATTRIBUTE=userPassword
 EOF
 
 echo "✅ Fichier .env créé."
