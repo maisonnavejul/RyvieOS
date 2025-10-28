@@ -1574,7 +1574,7 @@ else
     fi
 fi
 
-cd Ryvie-rdrop/snapdrop-master/snapdrop-master
+cd Ryvie-rdrop/rDrop-main
 
 echo "✅ Répertoire atteint : $(pwd)"
 
