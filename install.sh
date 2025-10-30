@@ -1304,35 +1304,19 @@ dn: cn=jules,ou=users,dc=example,dc=org
 objectClass: inetOrgPerson
 objectClass: posixAccount
 objectClass: shadowAccount
-cn: jules
-sn: jules
-uid: jules
+cn: ryvie
+sn: ryvie
+uid: ryvie
 uidNumber: 1003
 gidNumber: 1003
-homeDirectory: /home/jules
-mail: maisonnavejul@gmail.com
-userPassword: julespassword
+homeDirectory: /home/ryvie
+mail: ryvie@gmail.com
+userPassword: ryviepassword
 employeeType: admins
-
-dn: cn=Test,ou=users,dc=example,dc=org
-objectClass: inetOrgPerson
-objectClass: posixAccount
-objectClass: shadowAccount
-cn: Test
-sn: Test
-uid: test
-uidNumber: 1004
-gidNumber: 1004
-homeDirectory: /home/test
-mail: test@gmail.com
-userPassword: testpassword
-employeeType: users
 EOF
 
 ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f add-users.ldif
 
-# 7. Tester l'accès de l'utilisateur "Test"
-ldapwhoami -x -H ldap://localhost:389 -D "cn=Test,ou=users,dc=example,dc=org" -w testpassword
 
 # 8. Créer les groupes via add-groups.ldif
 cat <<'EOF' > add-groups.ldif
@@ -1340,13 +1324,7 @@ cat <<'EOF' > add-groups.ldif
 dn: cn=admins,ou=users,dc=example,dc=org
 objectClass: groupOfNames
 cn: admins
-member: cn=jules,ou=users,dc=example,dc=org
-
-# Groupe users
-dn: cn=users,ou=users,dc=example,dc=org
-objectClass: groupOfNames
-cn: users
-member: cn=Test,ou=users,dc=example,dc=org
+member: cn=ryvie,ou=users,dc=example,dc=org
 EOF
 
 ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f add-groups.ldif
