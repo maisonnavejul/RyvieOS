@@ -1464,6 +1464,17 @@ DB_PASSWORD=postgres
 # Internal DB vars
 DB_USERNAME=postgres
 DB_DATABASE_NAME=immich
+
+LDAP_URL= ldap://openldap:1389
+LDAP_BIND_DN=cn=admin,dc=example,dc=org
+LDAP_BIND_PASSWORD=adminpassword
+LDAP_BASE_DN=dc=example,dc=org
+LDAP_USER_BASE_DN=ou=users,dc=example,dc=org
+LDAP_USER_FILTER=(objectClass=inetOrgPerson)
+LDAP_ADMIN_GROUP=admins
+LDAP_EMAIL_ATTRIBUTE=mail
+LDAP_NAME_ATTRIBUTE=cn
+LDAP_PASSWORD_ATTRIBUTE=userPassword
 EOF
 
 echo "✅ Fichier .env créé."
@@ -1473,8 +1484,8 @@ echo "🚀 Lancement de rPictures avec Docker Compose..."
 sudo docker compose -f docker-compose.yml up -d
 
 # 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
-echo "⏳ Attente du démarrage d'Immich (port 2283)..."
-until curl -s http://localhost:2283 > /dev/null; do
+echo "⏳ Attente du démarrage d'Immich (port 3013)..."
+until curl -s http://localhost:3013 > /dev/null; do
     sleep 2
     echo -n "."
 done
@@ -1563,7 +1574,7 @@ else
     fi
 fi
 
-cd Ryvie-rdrop/snapdrop-master/snapdrop-master
+cd Ryvie-rdrop/rDrop-main
 
 echo "✅ Répertoire atteint : $(pwd)"
 
