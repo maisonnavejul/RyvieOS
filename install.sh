@@ -1300,7 +1300,7 @@ ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassw
 
 # 6. Créer les utilisateurs via add-users.ldif
 cat <<'EOF' > add-users.ldif
-dn: cn=jules,ou=users,dc=example,dc=org
+dn: cn=ryvie,ou=users,dc=example,dc=org
 objectClass: inetOrgPerson
 objectClass: posixAccount
 objectClass: shadowAccount
