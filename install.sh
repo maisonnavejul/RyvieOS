@@ -1,7 +1,10 @@
-
 #!/usr/bin/env bash
 # Détecter l’utilisateur réel même si le script est lancé avec sudo
 EXEC_USER="${SUDO_USER:-$USER}"
+EXEC_HOME="$(getent passwd "$EXEC_USER" | cut -d: -f6)"
+if [ -z "$EXEC_HOME" ]; then
+    EXEC_HOME="/home/$EXEC_USER"
+fi
 
 echo ""
 echo "
@@ -51,14 +54,29 @@ APPS_DIR="$DATA_ROOT/apps"
 CONFIG_DIR="$DATA_ROOT/config"
 LOG_DIR="$DATA_ROOT/logs"
 DOCKER_ROOT="$DATA_ROOT/docker"
-PM2_HOME_DIR="$DATA_ROOT/pm2"
-sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$PM2_HOME_DIR"
-# Donner la main à l'utilisateur sur les répertoires non système
-sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$PM2_HOME_DIR" || true
+RYVIE_ROOT="/opt"
+IMAGES_DIR="$DATA_ROOT/images"
+USERPREF_DIR="$CONFIG_DIR/user-preferences"
 
-# PM2 directory and export (idempotent)
-export PM2_HOME="$PM2_HOME_DIR"
-echo 'export PM2_HOME="/data/pm2"' | sudo tee -a /etc/profile.d/ryvie_pm2.sh >/dev/null
+sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$RYVIE_ROOT" "$IMAGES_DIR/backgrounds" "$USERPREF_DIR" "$DATA_ROOT/snapshot"
+
+# Permissions sécurisées : NE JAMAIS chown -R sur DOCKER_ROOT pour éviter de casser les volumes
+# Seul le dossier racine /data (non récursif)
+sudo chown "$EXEC_USER:$EXEC_USER" "$DATA_ROOT" || true
+sudo chmod 755 "$DATA_ROOT" || true
+
+# Donner la main à l'utilisateur sur les répertoires non système (SANS toucher à Docker)
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$IMAGES_DIR" || true
+# Pour /opt, on attend que le dossier Ryvie soit créé pour ne pas chown tout /opt
+# Les permissions seront appliquées après le clonage du repo
+
+# Protection explicite : ne jamais modifier les permissions des volumes Docker
+if [ -d "$DOCKER_ROOT" ]; then
+  echo "ℹ️ Skip chown on $DOCKER_ROOT/* (volumes Docker protégés)"
+fi
+
+# PM2 utilise son répertoire par défaut (~/.pm2)
+sudo rm -f /etc/profile.d/ryvie_pm2.sh
 
 # rclone configuration path under /data/config
 export RCLONE_CONFIG="$CONFIG_DIR/rclone/rclone.conf"
@@ -70,6 +88,40 @@ sudo chmod 600 "$RCLONE_CONFIG" || true
 get_work_dir() {
     printf '%s' "$APPS_DIR"
 }
+
+#vérification que /data est bien BTRFS
+if [[ "$(findmnt -no FSTYPE "$DATA_ROOT")" != "btrfs" ]]; then
+  echo "❌ $DATA_ROOT n'est pas en Btrfs — impossible de créer des sous-volumes."
+  exit 1
+fi
+
+echo "----------------------------------------------------"
+echo "Étape 0: Création des sous-volumes BTRFS"
+echo "----------------------------------------------------"
+# --- Convertir les répertoires clés en sous-volumes Btrfs (idempotent) ---
+for dir in "$APPS_DIR" "$CONFIG_DIR" "$DOCKER_ROOT" "$LOG_DIR" "$IMAGES_DIR" "$DATA_ROOT/netbird"; do
+  if [[ -d "$dir" ]]; then
+    if ! sudo btrfs subvolume show "$dir" &>/dev/null; then
+      echo "🧱 Création du sous-volume Btrfs : $dir"
+      TMP="${dir}.tmp-$$"
+      sudo mv "$dir" "$TMP"
+      sudo btrfs subvolume create "$dir"
+      sudo cp -a --reflink=always "$TMP"/. "$dir"/
+      sudo rm -rf "$TMP"
+    else
+      echo "✅ $dir est déjà un sous-volume"
+    fi
+  fi
+done
+
+# Dossier snapshot isolé (ne sera jamais inclus dans les snapshots)
+if [[ ! -d "$DATA_ROOT/snapshot" ]] || ! sudo btrfs subvolume show "$DATA_ROOT/snapshot" &>/dev/null; then
+  sudo btrfs subvolume create "$DATA_ROOT/snapshot"
+  echo "📦 Sous-volume snapshot créé : $DATA_ROOT/snapshot"
+fi
+
+
+
 
 # =====================================================
 # Étape 1: Vérification des prérequis système
@@ -208,13 +260,16 @@ echo " Vérification et installation de npm "
 echo "------------------------------------------"
 echo ""
 
-
 # Dépôts sur lesquels tu es invité
-REPOS=(
+# Ryvie apps dans /data/apps
+REPOS_APPS=(
     "Ryvie-rPictures"
     "Ryvie-rTransfer"
     "Ryvie-rdrop"
     "Ryvie-rDrive"
+)
+# Ryvie principal dans /opt/ryvie
+REPOS_OPT=(
     "Ryvie"
 )
 
@@ -252,20 +307,19 @@ else
     exit 1
 fi
 
-# Se positionner dans le répertoire des applications
-cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
-
 CREATED_DIRS=()
 
 log() {
     echo -e "$1"
 }
 OWNER="maisonnavejul"
-# Clonage des dépôts
-for repo in "${REPOS[@]}"; do
+
+# Clonage des dépôts dans /data/apps
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
+for repo in "${REPOS_APPS[@]}"; do
     if [[ ! -d "$repo" ]]; then
         repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
-        log "📥 Clonage du dépôt $repo (branche $BRANCH)..."
+        log "📥 Clonage du dépôt $repo dans $APPS_DIR (branche $BRANCH)..."
         sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
         if [[ $? -eq 0 ]]; then
             CREATED_DIRS+=("$APPS_DIR/$repo")
@@ -274,8 +328,36 @@ for repo in "${REPOS[@]}"; do
         fi
     else
         log "✅ Dépôt déjà cloné: $repo"
-        # Optionnel: tenter un pull sans échec bloquant
         sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
+    fi
+done
+
+# Clonage de Ryvie dans /opt (devient /opt/Ryvie)
+# Créer le dossier parent avec les bonnes permissions pour permettre le clonage
+for repo in "${REPOS_OPT[@]}"; do
+    sudo mkdir -p "$RYVIE_ROOT/$repo"
+    sudo chown "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo"
+done
+
+cd "$RYVIE_ROOT" || { echo "❌ Impossible d'accéder à $RYVIE_ROOT"; exit 1; }
+for repo in "${REPOS_OPT[@]}"; do
+    if [[ ! -d "$repo/.git" ]]; then
+        repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
+        log "📥 Clonage du dépôt $repo dans $RYVIE_ROOT (branche $BRANCH)..."
+        sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
+        if [[ $? -eq 0 ]]; then
+            CREATED_DIRS+=("$RYVIE_ROOT/$repo")
+            # Appliquer les permissions récursives sur le dossier cloné
+            sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo"
+            log "✅ Permissions appliquées sur $RYVIE_ROOT/$repo"
+        else
+            log "❌ Échec du clonage du dépôt : $repo"
+        fi
+    else
+        log "✅ Dépôt déjà cloné: $repo"
+        sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
+        # S'assurer que les permissions sont correctes
+        sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo" || true
     fi
 done
 
@@ -301,7 +383,10 @@ echo "----------------------------------------------------"
 echo "Etape intermédiaire : augmentation des permissions"
 echo "----------------------------------------------------"
 sudo usermod -aG sudo ryvie
-sudo chown -R "$EXEC_USER:$EXEC_USER" /data
+
+# ⚠️ NE JAMAIS faire chown -R /data (casse les volumes Docker)
+# Les permissions sont déjà définies au début du script de manière ciblée
+echo "✅ Permissions configurées de manière sécurisée (Docker volumes protégés)"
 echo ""
 echo ""
 echo "------------------------------------------"
@@ -345,9 +430,6 @@ echo "Etape 3: Vérification des dépendances (mode strict pour cette section)"
 echo "----------------------------------------------------"
 # Activer le comportement "exit on error" uniquement pour l'installation des dépendances
 strict_enter
-# Installer les dépendances Node.js
-#npm install express cors http socket.io os dockerode ldapjs
-sudo -H -u "$EXEC_USER" npm install express cors socket.io dockerode diskusage systeminformation ldapjs dotenv jsonwebtoken os-utils --save
 install_pkgs gdisk parted build-essential python3 make g++ ldap-utils
 # Vérifier le code de retour de npm install (strict mode assure l'arrêt si npm install échoue)
 echo ""
@@ -509,6 +591,37 @@ if getent group docker >/dev/null 2>&1; then
   echo "ℹ️ Déconnecte/reconnecte-toi (ou 'newgrp docker') pour activer l'appartenance au groupe docker."
 fi
 
+echo ""
+echo "----------------------------------------------------"
+echo "🔧 Fonction de réparation des permissions Docker (si nécessaire)"
+echo "----------------------------------------------------"
+# Cette fonction permet de réparer les permissions des volumes Docker
+# si vous avez accidentellement fait un chown -R sur /data
+repair_docker_volumes() {
+  echo "⚙️ Réparation des permissions des volumes Docker sensibles..."
+  
+  # Prometheus (UID 65534:65534 = nobody)
+  if docker volume ls | grep -q "prometheus-data"; then
+    echo "  🔹 Réparation Prometheus..."
+    docker run --rm -v immich-prod_prometheus-data:/prometheus alpine \
+      sh -c 'chown -R 65534:65534 /prometheus && chmod -R u+rwX,g+rwX /prometheus' 2>/dev/null || \
+      echo "    ⚠️ Volume Prometheus non trouvé ou déjà OK"
+  fi
+  
+  # PostgreSQL rPictures (généralement UID 999:999)
+  if docker volume ls | grep -q "pgvecto-rs"; then
+    echo "  🔹 Réparation PostgreSQL rPictures..."
+    docker run --rm -v app-rpictures_pgvecto-rs:/var/lib/postgresql/data alpine \
+      sh -c 'chown -R 999:999 /var/lib/postgresql/data' 2>/dev/null || \
+      echo "    ⚠️ Volume PostgreSQL non trouvé ou déjà OK"
+  fi
+  
+  echo "✅ Réparation des volumes terminée"
+}
+
+# Décommenter la ligne suivante UNIQUEMENT si vous devez réparer les permissions
+# repair_docker_volumes
+
 strict_exit
 
 
@@ -534,8 +647,8 @@ readonly MANAGEMENT_URL="https://netbird.ryvie.fr"
 readonly SETUP_KEY="80E89E44-5EC4-42D5-A555-781CC1CC8CD1"
 readonly API_ENDPOINT="http://netbird.ryvie.fr:8088/api/register"
 readonly NETBIRD_INTERFACE="wt0"
-readonly TARGET_DIR="Ryvie/Ryvie-Front/src/config"
-RDRIVE_DIR="Ryvie-rDrive/tdrive"
+readonly TARGET_DIR="$RYVIE_ROOT/Ryvie/Ryvie-Front/src/config"
+RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
 
 # Persistance NetBird sous $DATA_ROOT/netbird (idempotent)
 
@@ -853,7 +966,7 @@ install_jq() {
 # Fonction pour générer le fichier .env
 generate_env_file() {
     local json_file="$CONFIG_DIR/netbird/netbird-data.json"
-    local rdrive_path="$APPS_DIR/$RDRIVE_DIR"
+    local rdrive_path="$RDRIVE_DIR"
     
     log_info "=== Début de la phase de configuration d'environnement ==="
     log_info "Génération de la configuration d'environnement..."
@@ -941,8 +1054,8 @@ validate_prerequisites() {
         log_warning "Cannot create target directory structure: $TARGET_DIR"
     fi
     
-    if [ ! -d "$APPS_DIR/$(dirname "$RDRIVE_DIR")" ]; then
-        log_warning "RDrive directory structure not found: $APPS_DIR/$RDRIVE_DIR"
+    if [ ! -d "$(dirname "$RDRIVE_DIR")" ]; then
+        log_warning "RDrive directory structure not found: $RDRIVE_DIR"
     fi
 }
 
@@ -993,8 +1106,8 @@ main_env_setup() {
 main() {
     echo "🚀 Launching NetBird Configuration..."
     
-    # Use APPS_DIR as canonical apps root
-    cd "$APPS_DIR" || { log_error "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
+    # Use RYVIE_ROOT for NetBird config
+    cd "$RYVIE_ROOT" || { log_error "❌ Impossible d'accéder à $RYVIE_ROOT"; exit 1; }
     
     # Validate environment
     validate_prerequisites
@@ -1122,10 +1235,10 @@ echo ""
 echo "Etape 12: Configuration d'OpenLDAP avec Docker Compose"
 echo "-----------------------------------------------------"
 
-# 1. Créer le dossier ldap sous /data/apps et s'y positionner
-LDAP_DIR="$(get_work_dir)"
-mkdir -p "$LDAP_DIR/ldap"
-cd "$LDAP_DIR/ldap"
+# 1. Créer le dossier ldap sous /data/config et s'y positionner
+LDAP_DIR="$CONFIG_DIR/ldap"
+mkdir -p "$LDAP_DIR"
+cd "$LDAP_DIR"
 
 # 2. Créer le fichier docker-compose.yml pour lancer OpenLDAP
 cat <<'EOF' > docker-compose.yml
@@ -1351,17 +1464,28 @@ DB_PASSWORD=postgres
 # Internal DB vars
 DB_USERNAME=postgres
 DB_DATABASE_NAME=immich
+
+LDAP_URL= ldap://openldap:1389
+LDAP_BIND_DN=cn=admin,dc=example,dc=org
+LDAP_BIND_PASSWORD=adminpassword
+LDAP_BASE_DN=dc=example,dc=org
+LDAP_USER_BASE_DN=ou=users,dc=example,dc=org
+LDAP_USER_FILTER=(objectClass=inetOrgPerson)
+LDAP_ADMIN_GROUP=admins
+LDAP_EMAIL_ATTRIBUTE=mail
+LDAP_NAME_ATTRIBUTE=cn
+LDAP_PASSWORD_ATTRIBUTE=userPassword
 EOF
 
 echo "✅ Fichier .env créé."
 
 # 5. Lancer les services Immich en mode production
 echo "🚀 Lancement de rPictures avec Docker Compose..."
-sudo docker compose -f docker-compose.ryvie.yml up -d
+sudo docker compose -f docker-compose.yml up -d
 
 # 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
-echo "⏳ Attente du démarrage d'Immich (port 2283)..."
-until curl -s http://localhost:2283 > /dev/null; do
+echo "⏳ Attente du démarrage d'Immich (port 3013)..."
+until curl -s http://localhost:3013 > /dev/null; do
     sleep 2
     echo -n "."
 done
@@ -1417,9 +1541,9 @@ fi
 cd "Ryvie-rTransfer" || { echo "❌ Impossible d'accéder à Ryvie-rTransfer"; exit 1; }
 pwd
 
-# 3. Lancer rTransfer avec docker-compose.local.yml
+# 3. Lancer rTransfer avec docker-compose.yml
 echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.local.yml..."
-sudo docker compose -f docker-compose.local.yml up -d
+sudo docker compose -f docker-compose.yml up -d
 
 # 4. Vérification du démarrage sur le port 3000
 echo "⏳ Attente du démarrage de rTransfer (port 3000)..."
@@ -1450,7 +1574,7 @@ else
     fi
 fi
 
-cd Ryvie-rdrop/snapdrop-master/snapdrop-master
+cd Ryvie-rdrop/rDrop-main
 
 echo "✅ Répertoire atteint : $(pwd)"
 
@@ -1507,109 +1631,81 @@ grep -q 'RCLONE_CONFIG=' /etc/profile.d/ryvie_rclone.sh 2>/dev/null || \
 
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 14: Installation et lancement de Ryvie rDrive"
+echo "Étape 14: Installation et lancement de Ryvie rDrive (compose unique)"
 echo "-----------------------------------------------------"
 
-# Sécurités
-# (removed duplicate `set -euo pipefail` here; strict mode already enabled above)
-# Dossier du script
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Dossier rDrive
+RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
 
-# Déduction robuste du chemin de tdrive
-if [ -d "$SCRIPT_DIR/Ryvie-rDrive/tdrive" ]; then
-  RDRIVE_DIR="$SCRIPT_DIR/Ryvie-rDrive/tdrive"
-elif [ -d "$SCRIPT_DIR/tdrive" ]; then
-  # cas où le script est lancé depuis le repo Ryvie-rDrive
-  RDRIVE_DIR="$SCRIPT_DIR/tdrive"
-elif [ -d "$APPS_DIR/Ryvie-rDrive/tdrive" ]; then
-  RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
-else
-  echo "❌ Impossible de trouver le dossier 'tdrive' (cherché depuis $SCRIPT_DIR et $APPS_DIR)."
+# 1) Vérifier la présence du compose et du .env
+cd "$RDRIVE_DIR" || { echo "❌ Impossible d'accéder à $RDRIVE_DIR"; exit 1; }
+
+if [ ! -f docker-compose.yml ]; then
+  echo "❌ docker-compose.yml introuvable dans $RDRIVE_DIR"
+  echo "   Place le fichier docker-compose.yml ici puis relance."
   exit 1
 fi
 
-cd "$RDRIVE_DIR"
-
-# --- NEW: wrapper Docker (utilise sudo si nécessaire) + start du service ---
-if docker info >/dev/null 2>&1; then
-  DOCKER="docker"
-else
-  DOCKER="sudo docker"
+# Le .env front/back est généré plus haut (NetBird → generate_env_file)
+if [ ! -f "$CONFIG_DIR/rdrive/.env" ]; then
+  echo "⚠️ /data/config/rdrive/.env introuvable — tentative de régénération…"
+  generate_env_file || {
+    echo "❌ Impossible de générer /data/config/rdrive/.env"
+    exit 1
+  }
 fi
-d() { $DOCKER "$@" ; }
-dc() { $DOCKER compose "$@" ; }
-# Assure que le daemon tourne (silencieux si déjà actif)
-sudo systemctl start docker 2>/dev/null || true
 
-# Fonction utilitaire pour attendre un conteneur Docker
-wait_cid() {
-  local cid="$1"
-  local name state health
-  name="$(d inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##')"
-  echo "⏳ Attente du conteneur $name ..."
-  while :; do
-    state="$(d inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo 'unknown')"
-    health="$(d inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || true)"
-    if [[ "$state" == "running" && ( -z "$health" || "$health" == "healthy" ) ]]; then
-      echo "✅ $name prêt."
-      break
+# (Optionnel) s'assurer que rclone est montable au bon chemin
+if ! [ -x /usr/bin/rclone ]; then
+  RBIN="$(command -v rclone || true)"
+  if [ -n "$RBIN" ]; then
+    sudo ln -sf "$RBIN" /usr/bin/rclone
+  fi
+fi
+
+# 2) Lancement unique
+echo "🚀 Démarrage de la stack rDrive…"
+sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" pull || true
+sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" up -d --build
+
+# 3) Attentes/health (best-effort)
+echo "⏳ Attente des services (mongo, onlyoffice, node, frontend)…"
+wait_for_service() {
+  local svc="$1"
+  local retries=60
+  while [ $retries -gt 0 ]; do
+    if sudo docker compose ps --format json | jq -e ".[] | select(.Service==\"$svc\") | .State==\"running\"" >/dev/null 2>&1; then
+      # si health est défini, essaye de lire
+      if sudo docker inspect --format='{{json .State.Health}}' "$(sudo docker compose ps -q "$svc")" 2>/dev/null | jq -e '.Status=="healthy"' >/dev/null 2>&1; then
+        echo "✅ $svc healthy"
+        return 0
+      fi
+      # sinon, running suffit
+      echo "✅ $svc en cours d'exécution"
+      return 0
     fi
     sleep 2
-    echo "   …"
+    retries=$((retries-1))
   done
+  echo "⚠️ Timeout d’attente pour $svc"
+  return 1
 }
 
-# 1. Lancer OnlyOffice
-echo "🔹 Démarrage de OnlyOffice..."
-dc -f docker-compose.dev.onlyoffice.yml \
-   -f docker-compose.onlyoffice-connector-override.yml \
-   up -d
 
-# 1b. Attendre que tous les conteneurs OnlyOffice soient prêts
-OO_CIDS=$(dc -f docker-compose.dev.onlyoffice.yml \
-             -f docker-compose.onlyoffice-connector-override.yml \
-             ps -q)
+echo "✅ rDrive est lancé via docker-compose unique."
+echo "   Frontend accessible (par défaut) sur http://localhost:3010"
 
-if [ -z "$OO_CIDS" ]; then
-  echo "❌ Aucun conteneur détecté pour la stack OnlyOffice."
-  exit 1
-fi
-
-for cid in $OO_CIDS; do
-  wait_cid "$cid"
-done
-
-# 2. Build et démarrage du service node
-echo "🔹 Build du service node..."
-dc -f docker-compose.minimal.yml build node
-
-echo "🔹 Démarrage du service node..."
-dc -f docker-compose.minimal.yml up -d node
-
-# 2b. Attendre que node soit prêt
-NODE_CID=$(dc -f docker-compose.minimal.yml ps -q node)
-wait_cid "$NODE_CID"
-
-# 3. Lancer frontend
-echo "🔹 Démarrage du service frontend..."
-dc -f docker-compose.minimal.yml up -d frontend
-
-# 4. Démarrer le reste du minimal
-echo "🔹 Démarrage du reste des services (mongo, etc.)..."
-dc -f docker-compose.minimal.yml up -d
-
-echo "✅ rDrive est lancé."
 
 echo "-----------------------------------------------------"
 echo "Étape 15: Installation et lancement du Back-end-view et Front-end"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
-cd "$APPS_DIR" || { echo "❌ APPS_DIR introuvable: $APPS_DIR"; exit 1; }
+cd "$RYVIE_ROOT" || { echo "❌ RYVIE_ROOT introuvable: $RYVIE_ROOT"; exit 1; }
 
 # Vérifier la présence du dépôt Ryvie
 if [ ! -d "Ryvie" ]; then
-    echo "❌ Le dépôt 'Ryvie' est introuvable dans $APPS_DIR. Assurez-vous qu'il a été cloné plus haut."
+    echo "❌ Le dépôt 'Ryvie' est introuvable dans $RYVIE_ROOT. Assurez-vous qu'il a été cloné plus haut."
     exit 1
 fi
 
@@ -1631,8 +1727,6 @@ LDAP_BIND_DN=cn=read-only,ou=users,dc=example,dc=org
 LDAP_BIND_PASSWORD=readpassword
 LDAP_USER_SEARCH_BASE=ou=users,dc=example,dc=org
 LDAP_GROUP_SEARCH_BASE=ou=users,dc=example,dc=org
-LDAP_USER_FILTER=(objectClass=inetOrgPerson)
-LDAP_GROUP_FILTER=(objectClass=groupOfNames)
 LDAP_ADMIN_GROUP=cn=admins,ou=users,dc=example,dc=org
 LDAP_USER_GROUP=cn=users,ou=users,dc=example,dc=org
 LDAP_GUEST_GROUP=cn=guests,ou=users,dc=example,dc=org
@@ -1666,7 +1760,7 @@ if ! command -v pm2 &> /dev/null; then
     echo "📦 Installation de PM2..."
     sudo npm install -g pm2 || { echo "❌ Échec de l'installation de PM2"; exit 1; }
     # Configurer PM2 pour le démarrage automatique
-    sudo pm2 startup
+    sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
 fi
 
 # Installer les dépendances
@@ -1676,21 +1770,19 @@ sudo -u "$EXEC_USER" npm install || { echo "❌ npm install a échoué"; exit 1;
 
 # Démarrer ou redémarrer le service avec PM2
 echo "🚀 Démarrage du Back-end-view avec PM2..."
-pm2 describe backend-view > /dev/null 2>&1
-
-if [ $? -eq 0 ]; then
+if sudo -u "$EXEC_USER" pm2 describe backend-view > /dev/null 2>&1; then
     echo "🔄 Redémarrage du service backend-view existant..."
-    pm2 restart backend-view --update-env
+    sudo -u "$EXEC_USER" pm2 restart backend-view --update-env
 else
     echo "✨ Création d'un nouveau service PM2 pour backend-view..."
-    pm2 start index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
+    sudo -u "$EXEC_USER" pm2 start index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
 fi
 
 # Sauvegarder la configuration PM2
-pm2 save
+sudo -u "$EXEC_USER" pm2 save
 
 # Configurer PM2 pour le démarrage automatique
-pm2 startup | tail -n 1 | bash
+sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
 
 echo "✅ Back-end-view est géré par PM2"
 echo "📝 Logs d'accès: $LOG_DIR/backend-view-out.log"
@@ -1699,28 +1791,27 @@ echo "ℹ️ Commandes utiles:"
 echo "   - Voir les logs: pm2 logs backend-view"
 echo "   - Arrêter: pm2 stop backend-view"
 echo "   - Redémarrer: pm2 restart backend-view"
+echo "   - Arrêter tout: pm2 stop all"
 echo "   - Statut: pm2 status"
 
 # Frontend setup
 echo "🚀 Setting up frontend..."
-cd "$APPS_DIR/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
+cd "$RYVIE_ROOT/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
 
 echo "📦 Installing frontend dependencies..."
 sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
 
 echo "🚀 Starting frontend with PM2..."
-pm2 describe ryvie-frontend > /dev/null 2>&1
-
-if [ $? -eq 0 ]; then
+if sudo -u "$EXEC_USER" pm2 describe ryvie-frontend > /dev/null 2>&1; then
     echo "🔄 Restarting existing ryvie-frontend service..."
-    pm2 restart ryvie-frontend --update-env
+    sudo -u "$EXEC_USER" pm2 restart ryvie-frontend --update-env
 else
     echo "✨ Creating new PM2 service for ryvie-frontend..."
-    pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
+    sudo -u "$EXEC_USER" pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
 fi
 
 # Save PM2 configuration
-pm2 save
+sudo -u "$EXEC_USER" pm2 save
 
 echo "✅ Frontend is now managed by PM2"
 echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
@@ -1728,6 +1819,42 @@ echo "ℹ️ Useful commands:"
 echo "   - View logs: pm2 logs ryvie-frontend"
 echo "   - Stop: pm2 stop ryvie-frontend"
 echo "   - Restart: pm2 restart ryvie-frontend"
+echo "   - Stop everything: pm2 stop all"
 echo "   - Status: pm2 status"
+
+echo ""
+echo "======================================================"
+echo "🧪 Tests de permissions (optionnel)"
+echo "======================================================"
+echo ""
+echo "Pour vérifier que les permissions sont correctes, exécutez :"
+echo ""
+echo "# Tests d'écriture dans les dossiers host (doivent réussir)"
+echo "sudo -u $EXEC_USER bash -lc 'touch /data/apps/.write_test && rm /data/apps/.write_test'"
+echo "sudo -u $EXEC_USER bash -lc 'touch /data/config/.write_test && rm /data/config/.write_test'"
+echo "sudo -u $EXEC_USER bash -lc 'touch /data/logs/.write_test && rm /data/logs/.write_test'"
+echo "sudo -u $EXEC_USER bash -lc 'touch /opt/Ryvie/.write_test && rm /opt/Ryvie/.write_test'"
+echo ""
+echo "# Vérifier l'ownership des volumes Docker (NE PAS modifier)"
+echo "ls -ld /data/docker/volumes/immich-prod_prometheus-data/_data 2>/dev/null || echo 'Volume Prometheus non trouvé'"
+echo "ls -ld /data/docker/volumes/app-rpictures_pgvecto-rs/_data 2>/dev/null || echo 'Volume PostgreSQL non trouvé'"
+echo ""
+echo "======================================================"
+echo "✅ Installation Ryvie OS terminée !"
+echo "======================================================"
+echo ""
+echo "📍 Architecture créée :"
+echo "   /opt/Ryvie/               → Application principale (Back-end-view, Front-end)"
+echo "   /data/apps/               → Applications Ryvie (rPictures, rDrive, rdrop, rTransfer)"
+echo "   /data/apps/portainer/     → Données Portainer"
+echo "   /data/config/ldap/        → Configuration OpenLDAP"
+echo "   /data/config/             → Configurations (netbird, rdrive, backend-view, rclone)"
+echo "   /data/logs/               → Logs applicatifs"
+echo "   /data/docker/             → Volumes Docker (PROTÉGÉS - ne pas modifier)"
+echo ""
+echo "⚠️  IMPORTANT : Si vous rencontrez des problèmes de permissions Docker,"
+echo "    décommentez la ligne 'repair_docker_volumes' dans la section Docker du script"
+echo "    et relancez uniquement cette partie."
+echo ""
 
 newgrp docker
