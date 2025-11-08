@@ -1472,7 +1472,7 @@ echo "✅ rPictures est lancé."
 
 # 7. Synchroniser les utilisateurs LDAP
 echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:3013/api/admin/users/sync-ldap)
 
 if [ "$RESPONSE" -eq 200 ]; then
     echo "✅ Synchronisation LDAP réussie avec rPictures."
@@ -1482,7 +1482,7 @@ fi
 
 # 7. Synchroniser les utilisateurs LDAP
 echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:3013/api/admin/users/sync-ldap)
 
 if [ "$RESPONSE" -eq 200 ]; then
     echo "✅ Synchronisation LDAP réussie avec rPictures."
@@ -1492,7 +1492,7 @@ fi
 
 # 7. Synchroniser les utilisateurs LDAP
 echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:3013/api/admin/users/sync-ldap)
 
 if [ "$RESPONSE" -eq 200 ]; then
     echo "✅ Synchronisation LDAP réussie avec rPictures."
