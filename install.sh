@@ -1298,55 +1298,13 @@ EOF
 
 ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f delete-entries.ldif
 
-# 6. Créer les utilisateurs via add-users.ldif
-cat <<'EOF' > add-users.ldif
-dn: cn=jules,ou=users,dc=example,dc=org
-objectClass: inetOrgPerson
-objectClass: posixAccount
-objectClass: shadowAccount
-cn: jules
-sn: jules
-uid: jules
-uidNumber: 1003
-gidNumber: 1003
-homeDirectory: /home/jules
-mail: maisonnavejul@gmail.com
-userPassword: julespassword
-employeeType: admins
-
-dn: cn=Test,ou=users,dc=example,dc=org
-objectClass: inetOrgPerson
-objectClass: posixAccount
-objectClass: shadowAccount
-cn: Test
-sn: Test
-uid: test
-uidNumber: 1004
-gidNumber: 1004
-homeDirectory: /home/test
-mail: test@gmail.com
-userPassword: testpassword
-employeeType: users
-EOF
-
-ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f add-users.ldif
-
-# 7. Tester l'accès de l'utilisateur "Test"
-ldapwhoami -x -H ldap://localhost:389 -D "cn=Test,ou=users,dc=example,dc=org" -w testpassword
-
+# Note: La création des utilisateurs et groupes se fera après l'inscription de l'utilisateur
 # 8. Créer les groupes via add-groups.ldif
 cat <<'EOF' > add-groups.ldif
 # Groupe admins
 dn: cn=admins,ou=users,dc=example,dc=org
 objectClass: groupOfNames
 cn: admins
-member: cn=jules,ou=users,dc=example,dc=org
-
-# Groupe users
-dn: cn=users,ou=users,dc=example,dc=org
-objectClass: groupOfNames
-cn: users
-member: cn=Test,ou=users,dc=example,dc=org
 EOF
 
 ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f add-groups.ldif
@@ -1420,7 +1378,7 @@ echo "✅ Configuration ACL pour le groupe admins appliquée."
  echo " ( à implémenter non mis car mdp dedans )"
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 10: Installation de Ryvie rPictures et synchronisation LDAP"
+echo "Étape 10: Installation de Ryvie rPictures"
 echo "-----------------------------------------------------"
 # 1. Se placer dans le dossier des applications (APPS_DIR défini en haut)
 echo "📁 Dossier sélectionné : $APPS_DIR"
@@ -1449,19 +1407,21 @@ cat <<EOF > .env
 # The location where your uploaded files are stored
 UPLOAD_LOCATION=./library
 
-# The location where your database files are stored
+# The location where your database files are stored. Network shares are not supported for the database
 DB_DATA_LOCATION=./postgres
 
-# Timezone
+# To set a timezone, uncomment the next line and change Etc/UTC to a TZ identifier from this list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List
 # TZ=Etc/UTC
 
-# Immich version
-IMMICH_VERSION=release
+# The Immich version to use. You can pin this to a specific version like "v2.1.0"
+IMMICH_VERSION=v2
 
-# Postgres password (change it in prod)
+# Connection secret for postgres. You should change it to a random password
+# Please use only the characters `A-Za-z0-9`, without special characters or spaces
 DB_PASSWORD=postgres
 
-# Internal DB vars
+# The values below this line do not need to be changed
+###################################################################################
 DB_USERNAME=postgres
 DB_DATABASE_NAME=immich
 
@@ -1484,46 +1444,18 @@ echo "🚀 Lancement de rPictures avec Docker Compose..."
 sudo docker compose -f docker-compose.yml up -d
 
 # 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
-echo "⏳ Attente du démarrage d'Immich (port 3013)..."
+echo "⏳ Attente du démarrage de rPictures (port 3013)..."
 until curl -s http://localhost:3013 > /dev/null; do
     sleep 2
     echo -n "."
 done
 echo ""
 echo "✅ rPictures est lancé."
+echo "ℹ️ Note: La synchronisation LDAP se fera après la création du premier utilisateur."
 
-# 7. Synchroniser les utilisateurs LDAP
-echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
-
-if [ "$RESPONSE" -eq 200 ]; then
-    echo "✅ Synchronisation LDAP réussie avec rPictures."
-else
-    echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
-fi
-
-# 7. Synchroniser les utilisateurs LDAP
-echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
-
-if [ "$RESPONSE" -eq 200 ]; then
-    echo "✅ Synchronisation LDAP réussie avec rPictures."
-else
-    echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
-fi
-
-# 7. Synchroniser les utilisateurs LDAP
-echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
-
-if [ "$RESPONSE" -eq 200 ]; then
-    echo "✅ Synchronisation LDAP réussie avec rPictures."
-else
-    echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
-fi
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 11: Installation de Ryvie rTransfer et synchronisation LDAP"
+echo "Étape 11: Installation de Ryvie rTransfer"
 echo "-----------------------------------------------------"
 
 # Aller dans le dossier de travail /data/apps
@@ -1546,7 +1478,7 @@ echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.local.yml..."
 sudo docker compose -f docker-compose.yml up -d
 
 # 4. Vérification du démarrage sur le port 3000
-echo "⏳ Attente du démarrage de rTransfer (port 3000)..."
+echo "⏳ Attente du démarrage de rTransfer (port 3011)..."
 until curl -s http://localhost:3011 > /dev/null; do
     sleep 2
     echo -n "."
@@ -1857,4 +1789,5 @@ echo "    décommentez la ligne 'repair_docker_volumes' dans la section Docker d
 echo "    et relancez uniquement cette partie."
 echo ""
 
-newgrp docker
+echo "newgrp docker"
+sudo reboot
