@@ -1298,33 +1298,13 @@ EOF
 
 ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f delete-entries.ldif
 
-# 6. Créer les utilisateurs via add-users.ldif
-cat <<'EOF' > add-users.ldif
-dn: cn=ryvie,ou=users,dc=example,dc=org
-objectClass: inetOrgPerson
-objectClass: posixAccount
-objectClass: shadowAccount
-cn: ryvie
-sn: ryvie
-uid: ryvie
-uidNumber: 1003
-gidNumber: 1003
-homeDirectory: /home/ryvie
-mail: ryvie@gmail.com
-userPassword: ryviepassword
-employeeType: admins
-EOF
-
-ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f add-users.ldif
-
-
+# Note: La création des utilisateurs et groupes se fera après l'inscription de l'utilisateur
 # 8. Créer les groupes via add-groups.ldif
 cat <<'EOF' > add-groups.ldif
 # Groupe admins
 dn: cn=admins,ou=users,dc=example,dc=org
 objectClass: groupOfNames
 cn: admins
-member: cn=ryvie,ou=users,dc=example,dc=org
 EOF
 
 ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f add-groups.ldif
@@ -1398,7 +1378,7 @@ echo "✅ Configuration ACL pour le groupe admins appliquée."
  echo " ( à implémenter non mis car mdp dedans )"
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 10: Installation de Ryvie rPictures et synchronisation LDAP"
+echo "Étape 10: Installation de Ryvie rPictures"
 echo "-----------------------------------------------------"
 # 1. Se placer dans le dossier des applications (APPS_DIR défini en haut)
 echo "📁 Dossier sélectionné : $APPS_DIR"
@@ -1471,20 +1451,11 @@ until curl -s http://localhost:3013 > /dev/null; do
 done
 echo ""
 echo "✅ rPictures est lancé."
-
-# 7. Synchroniser les utilisateurs LDAP
-echo "🔁 Synchronisation des utilisateurs LDAP avec rPictures..."
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:3013/api/ldap/sync)
-
-if [ "$RESPONSE" -eq 200 ]; then
-    echo "✅ Synchronisation LDAP réussie avec rPictures."
-else
-    echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
-fi
+echo "ℹ️ Note: La synchronisation LDAP se fera après la création du premier utilisateur."
 
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 11: Installation de Ryvie rTransfer et synchronisation LDAP"
+echo "Étape 11: Installation de Ryvie rTransfer"
 echo "-----------------------------------------------------"
 
 # Aller dans le dossier de travail /data/apps
@@ -1507,7 +1478,7 @@ echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.local.yml..."
 sudo docker compose -f docker-compose.yml up -d
 
 # 4. Vérification du démarrage sur le port 3000
-echo "⏳ Attente du démarrage de rTransfer (port 3000)..."
+echo "⏳ Attente du démarrage de rTransfer (port 3011)..."
 until curl -s http://localhost:3011 > /dev/null; do
     sleep 2
     echo -n "."
@@ -1818,4 +1789,5 @@ echo "    décommentez la ligne 'repair_docker_volumes' dans la section Docker d
 echo "    et relancez uniquement cette partie."
 echo ""
 
-newgrp docker
+echo "newgrp docker"
+sudo reboot
