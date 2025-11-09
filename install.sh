@@ -1427,19 +1427,21 @@ cat <<EOF > .env
 # The location where your uploaded files are stored
 UPLOAD_LOCATION=./library
 
-# The location where your database files are stored
+# The location where your database files are stored. Network shares are not supported for the database
 DB_DATA_LOCATION=./postgres
 
-# Timezone
+# To set a timezone, uncomment the next line and change Etc/UTC to a TZ identifier from this list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List
 # TZ=Etc/UTC
 
-# Immich version
-IMMICH_VERSION=release
+# The Immich version to use. You can pin this to a specific version like "v2.1.0"
+IMMICH_VERSION=v2
 
-# Postgres password (change it in prod)
+# Connection secret for postgres. You should change it to a random password
+# Please use only the characters `A-Za-z0-9`, without special characters or spaces
 DB_PASSWORD=postgres
 
-# Internal DB vars
+# The values below this line do not need to be changed
+###################################################################################
 DB_USERNAME=postgres
 DB_DATABASE_NAME=immich
 
@@ -1462,8 +1464,8 @@ echo "🚀 Lancement de rPictures avec Docker Compose..."
 sudo docker compose -f docker-compose.yml up -d
 
 # 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
-echo "⏳ Attente du démarrage d'Immich (port 2283)..."
-until curl -s http://localhost:2283 > /dev/null; do
+echo "⏳ Attente du démarrage de rPictures (port 3013)..."
+until curl -s http://localhost:3013 > /dev/null; do
     sleep 2
     echo -n "."
 done
@@ -1471,8 +1473,8 @@ echo ""
 echo "✅ rPictures est lancé."
 
 # 7. Synchroniser les utilisateurs LDAP
-echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
+echo "🔁 Synchronisation des utilisateurs LDAP avec rPictures..."
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:3013/api/ldap/sync)
 
 if [ "$RESPONSE" -eq 200 ]; then
     echo "✅ Synchronisation LDAP réussie avec rPictures."
@@ -1480,25 +1482,6 @@ else
     echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
 fi
 
-# 7. Synchroniser les utilisateurs LDAP
-echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
-
-if [ "$RESPONSE" -eq 200 ]; then
-    echo "✅ Synchronisation LDAP réussie avec rPictures."
-else
-    echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
-fi
-
-# 7. Synchroniser les utilisateurs LDAP
-echo "🔁 Synchronisation des utilisateurs LDAP avec Immich..."
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://localhost:2283/api/admin/users/sync-ldap)
-
-if [ "$RESPONSE" -eq 200 ]; then
-    echo "✅ Synchronisation LDAP réussie avec rPictures."
-else
-    echo "❌ Échec de la synchronisation LDAP (code HTTP : $RESPONSE)"
-fi
 echo ""
 echo "-----------------------------------------------------"
 echo "Étape 11: Installation de Ryvie rTransfer et synchronisation LDAP"
