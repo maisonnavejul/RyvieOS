@@ -643,7 +643,7 @@ API_URL="https://netbird.ryvie.ovh/api"
 AUTH_TOKEN="nbp_cHLmqd5WmXVgnbVLmpeEvBULkfFNnE1qDgte"
 MANAGEMENT_URL="https://netbird.ryvie.ovh"
 API_ENDPOINT="https://api.ryvie.ovh/api/register"
-SETUP_KEY_NAME="${1:-isolated-$(date +%s)}"
+SETUP_KEY_NAME="${1:-$(date +%s)}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -661,7 +661,7 @@ GROUP_RESPONSE=$(curl -s -X POST "$API_URL/groups" \
   -H "Authorization: Token $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
-    \"name\": \"isolated-$SETUP_KEY_NAME\",
+    \"name\": \"Ryvie-$SETUP_KEY_NAME\",
     \"description\": \"Isolated group - internal communication only\"
   }")
 
@@ -732,43 +732,6 @@ else
   echo -e "${YELLOW}      ⚠ Warning: TCP policy failed${NC}"
   echo "Response: $TCP_POLICY"
 fi
-
-# Step 4: Connect to NetBird
-echo -e "${GREEN}[4/4]${NC} Connecting to NetBird..."
-
-if ! command -v netbird &> /dev/null; then
-    echo -e "${YELLOW}      Installing NetBird...${NC}"
-    curl -fsSL https://pkgs.netbird.io/install.sh | sh
-    sudo systemctl enable --now netbird
-fi
-
-sudo netbird down &> /dev/null || true
-
-if sudo netbird up --management-url "$MANAGEMENT_URL" --setup-key "$SETUP_KEY_VALUE"; then
-  echo -e "${GREEN}      ✓ Connected successfully!${NC}"
-  sleep 3
-  
-  NETBIRD_IP=$(sudo netbird status | grep "NetBird IP:" | awk '{print $3}' | cut -d'/' -f1)
-  
-  MACHINE_ID=$(cat /etc/machine-id 2>/dev/null || uuidgen)
-  curl -s -X POST "$API_ENDPOINT" \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"machine_id\": \"$MACHINE_ID\",
-      \"hostname\": \"$(hostname)\",
-      \"netbird_ip\": \"$NETBIRD_IP\",
-      \"group_id\": \"$GROUP_ID\",
-      \"setup_key\": \"$SETUP_KEY_VALUE\",
-      \"isolated\": true,
-      \"registered_at\": \"$(date -Iseconds)\"
-    }" > /dev/null
-  
-  echo -e "${GREEN}      ✓ Device registered${NC}"
-else
-  echo -e "${RED}      ✗ Connection failed${NC}"
-  exit 1
-fi
-
 echo ""
 echo -e "${BLUE}=================================================="
 echo "SETUP COMPLETE ✓"
@@ -785,18 +748,18 @@ echo -e "${RED}✗ Isolated from All group (external networks)${NC}"
 echo ""
 echo -e "${BLUE}==================================================${NC}"
 
-ENV_FILE="$CONFIG_DIR/.env"
-sudo mkdir -p "$CONFIG_DIR"
+ENV_FILE="$CONFIG_DIR/netbird/.env"
+sudo mkdir -p "$CONFIG_DIR/netbird"
 sudo touch "$ENV_FILE"
 sudo chown "$EXEC_USER:$EXEC_USER" "$ENV_FILE" || true
 tmp_env="$(mktemp)"
 if [ -s "$ENV_FILE" ]; then
-  grep -v '^NETBIRD_SETUP_KEY=' "$ENV_FILE" > "$tmp_env" 2>/dev/null || true
+  grep -vE '^(NETBIRD_SETUP_KEY|NETBIRD_IP)=' "$ENV_FILE" > "$tmp_env" 2>/dev/null || true
 fi
-printf 'NETBIRD_SETUP_KEY=%s\n' "$SETUP_KEY_VALUE" >> "$tmp_env"
+printf 'NETBIRD_SETUP_KEY=%s\n%s\n' "$SETUP_KEY_VALUE" >> "$tmp_env"
 sudo mv "$tmp_env" "$ENV_FILE"
 sudo chmod 600 "$ENV_FILE" || true
-echo "✅ NetBird setup key written to $ENV_FILE"
+echo "✅ NetBird setup key and IP written to $ENV_FILE"
 
 readonly MANAGEMENT_URL="https://netbird.ryvie.ovh"
 readonly SETUP_KEY=$SETUP_KEY_VALUE
@@ -1043,9 +1006,7 @@ register_with_api() {
     "os": "$DETECTED_OS",
     "backendHost": "$ip",
     "services": [
-        "rdrive", "rtransfer", "rdrop", "rpictures",
-        "app", "status",
-        "backend.rdrive", "connector.rdrive", "document.rdrive"
+       "rtransfer", "rdrop"
     ]
 }
 EOF
