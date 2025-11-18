@@ -637,15 +637,171 @@ echo "----------------------------------------------------"
 # Author: Ryvie Project
 # Version: 1.0
 #==========================================
+#!/bin/bash
+#!/bin/bash
+API_URL="https://netbird.ryvie.ovh/api"
+AUTH_TOKEN="nbp_cHLmqd5WmXVgnbVLmpeEvBULkfFNnE1qDgte"
+MANAGEMENT_URL="https://netbird.ryvie.ovh"
+API_ENDPOINT="https://api.ryvie.ovh/api/register"
+SETUP_KEY_NAME="${1:-isolated-$(date +%s)}"
 
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
+echo -e "${BLUE}=================================================="
+echo "NetBird Isolated Network Setup"
+echo -e "==================================================${NC}"
 
-#==========================================
-# CONFIGURATION
-#==========================================
-readonly MANAGEMENT_URL="https://netbird.ryvie.fr"
-readonly SETUP_KEY="80E89E44-5EC4-42D5-A555-781CC1CC8CD1"
-readonly API_ENDPOINT="http://netbird.ryvie.fr:8088/api/register"
+# Step 1: Create isolated group
+echo -e "${GREEN}[1/4]${NC} Creating isolated group..."
+GROUP_RESPONSE=$(curl -s -X POST "$API_URL/groups" \
+  -H "Authorization: Token $AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"name\": \"isolated-$SETUP_KEY_NAME\",
+    \"description\": \"Isolated group - internal communication only\"
+  }")
+
+GROUP_ID=$(echo "$GROUP_RESPONSE" | jq -r '.id // empty')
+
+if [ -z "$GROUP_ID" ] || [ "$GROUP_ID" = "null" ]; then
+  echo -e "${RED}ERROR: Failed to create group${NC}"
+  echo "Response: $GROUP_RESPONSE"
+  exit 1
+fi
+echo "      ✓ Group created: $GROUP_ID"
+
+# Step 2: Create setup key
+echo -e "${GREEN}[2/4]${NC} Creating setup key..."
+SETUP_KEY_RESPONSE=$(curl -s -X POST "$API_URL/setup-keys" \
+  -H "Authorization: Token $AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"name\": \"$SETUP_KEY_NAME\",
+    \"type\": \"reusable\",
+    \"reusable\": true,
+    \"ephemeral\": false,
+    \"auto_groups\": [\"$GROUP_ID\"]
+  }")
+
+SETUP_KEY_VALUE=$(echo "$SETUP_KEY_RESPONSE" | jq -r '.key // .plain_key // empty')
+
+if [ -z "$SETUP_KEY_VALUE" ] || [ "$SETUP_KEY_VALUE" = "null" ]; then
+  echo -e "${RED}ERROR: Failed to create setup key${NC}"
+  echo "Response: $SETUP_KEY_RESPONSE"
+  exit 1
+fi
+echo "      ✓ Setup key created: $SETUP_KEY_VALUE"
+
+# Step 3: Create TCP isolation policy
+echo -e "${GREEN}[3/4]${NC} Creating TCP isolation policy..."
+
+TCP_POLICY=$(curl -s -X POST "$API_URL/policies" \
+  -H "Authorization: Token $AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "isolated-tcp-'$SETUP_KEY_NAME'",
+    "description": "Allow TCP ports within isolated group",
+    "enabled": true,
+    "rules": [
+      {
+        "name": "allow-tcp-ports",
+        "description": "Allow TCP ports 80,443,3000-9999",
+        "enabled": true,
+        "sources": ["'$GROUP_ID'"],
+        "destinations": ["'$GROUP_ID'"],
+        "bidirectional": true,
+        "protocol": "tcp",
+        "port_ranges": [
+          {"start": 80, "end": 80},
+          {"start": 443, "end": 443},
+          {"start": 3000, "end": 9999}
+        ],
+        "action": "accept"
+      }
+    ]
+  }')
+
+if echo "$TCP_POLICY" | jq -e '.id' >/dev/null 2>&1; then
+  TCP_POLICY_ID=$(echo "$TCP_POLICY" | jq -r '.id')
+  echo "      ✓ TCP policy created: $TCP_POLICY_ID"
+else
+  echo -e "${YELLOW}      ⚠ Warning: TCP policy failed${NC}"
+  echo "Response: $TCP_POLICY"
+fi
+
+# Step 4: Connect to NetBird
+echo -e "${GREEN}[4/4]${NC} Connecting to NetBird..."
+
+if ! command -v netbird &> /dev/null; then
+    echo -e "${YELLOW}      Installing NetBird...${NC}"
+    curl -fsSL https://pkgs.netbird.io/install.sh | sh
+    sudo systemctl enable --now netbird
+fi
+
+sudo netbird down &> /dev/null || true
+
+if sudo netbird up --management-url "$MANAGEMENT_URL" --setup-key "$SETUP_KEY_VALUE"; then
+  echo -e "${GREEN}      ✓ Connected successfully!${NC}"
+  sleep 3
+  
+  NETBIRD_IP=$(sudo netbird status | grep "NetBird IP:" | awk '{print $3}' | cut -d'/' -f1)
+  
+  MACHINE_ID=$(cat /etc/machine-id 2>/dev/null || uuidgen)
+  curl -s -X POST "$API_ENDPOINT" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"machine_id\": \"$MACHINE_ID\",
+      \"hostname\": \"$(hostname)\",
+      \"netbird_ip\": \"$NETBIRD_IP\",
+      \"group_id\": \"$GROUP_ID\",
+      \"setup_key\": \"$SETUP_KEY_VALUE\",
+      \"isolated\": true,
+      \"registered_at\": \"$(date -Iseconds)\"
+    }" > /dev/null
+  
+  echo -e "${GREEN}      ✓ Device registered${NC}"
+else
+  echo -e "${RED}      ✗ Connection failed${NC}"
+  exit 1
+fi
+
+echo ""
+echo -e "${BLUE}=================================================="
+echo "SETUP COMPLETE ✓"
+echo -e "==================================================${NC}"
+echo ""
+echo -e "${GREEN}Group ID:${NC} $GROUP_ID"
+echo -e "${GREEN}NetBird IP:${NC} $NETBIRD_IP"
+echo ""
+echo -e "${GREEN}SETUP KEY (share with other devices):${NC}"
+echo -e "${YELLOW}$SETUP_KEY_VALUE${NC}"
+echo ""
+echo -e "${GREEN}✓ Peers in this group CAN communicate with each other${NC}"
+echo -e "${RED}✗ Isolated from All group (external networks)${NC}"
+echo ""
+echo -e "${BLUE}==================================================${NC}"
+
+ENV_FILE="$CONFIG_DIR/.env"
+sudo mkdir -p "$CONFIG_DIR"
+sudo touch "$ENV_FILE"
+sudo chown "$EXEC_USER:$EXEC_USER" "$ENV_FILE" || true
+tmp_env="$(mktemp)"
+if [ -s "$ENV_FILE" ]; then
+  grep -v '^NETBIRD_SETUP_KEY=' "$ENV_FILE" > "$tmp_env" 2>/dev/null || true
+fi
+printf 'NETBIRD_SETUP_KEY=%s\n' "$SETUP_KEY_VALUE" >> "$tmp_env"
+sudo mv "$tmp_env" "$ENV_FILE"
+sudo chmod 600 "$ENV_FILE" || true
+echo "✅ NetBird setup key written to $ENV_FILE"
+
+readonly MANAGEMENT_URL="https://netbird.ryvie.ovh"
+readonly SETUP_KEY=$SETUP_KEY_VALUE
+
+readonly API_ENDPOINT="https://api.ryvie.ovh/api/register"
 readonly NETBIRD_INTERFACE="wt0"
 readonly TARGET_DIR="$RYVIE_ROOT/Ryvie/Ryvie-Front/src/config"
 RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
