@@ -273,93 +273,117 @@ REPOS_OPT=(
     "Ryvie"
 )
 
-# Branche à cloner: interroge si RYVIE_BRANCH n'est pas défini
-if [ -z "${RYVIE_BRANCH:-}" ]; then
-    read -p "Quelle branche veux-tu cloner ? [main]: " BRANCH_INPUT
-    BRANCH="${BRANCH_INPUT:-main}"
+# Demander si on doit cloner les dépôts
+if [ -z "${SKIP_CLONE:-}" ]; then
+    read -p "Voulez-vous cloner/mettre à jour les dépôts GitHub ? (o/N): " CLONE_REPOS
+    CLONE_REPOS="${CLONE_REPOS:-N}"
 else
-    BRANCH="$RYVIE_BRANCH"
-fi
-echo "Branche sélectionnée: $BRANCH"
-
-# Fonction de vérification des identifiants
-verify_credentials() {
-    local user="$1"
-    local token="$2"
-    local status_code
-
-    status_code=$(curl -s -o /dev/null -w "%{http_code}" -u "$user:$token" https://api.github.com/user)
-    [[ "$status_code" == "200" ]]
-}
-
-# Identifiants GitHub: interroge si non fournis via env
-if [ -z "${GITHUB_USER:-}" ]; then
-    read -p "Entrez votre nom d'utilisateur GitHub : " GITHUB_USER
-fi
-if [ -z "${GITHUB_TOKEN:-}" ]; then
-    read -s -p "Entrez votre token GitHub personnel : " GITHUB_TOKEN
-    echo
-fi
-if verify_credentials "$GITHUB_USER" "$GITHUB_TOKEN"; then
-    echo "✅ Authentification GitHub réussie."
-else
-    echo "❌ Authentification GitHub échouée."
-    exit 1
+    CLONE_REPOS="$SKIP_CLONE"
 fi
 
 CREATED_DIRS=()
-
 log() {
     echo -e "$1"
 }
 OWNER="maisonnavejul"
 
-# Clonage des dépôts dans /data/apps
-cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
-for repo in "${REPOS_APPS[@]}"; do
-    if [[ ! -d "$repo" ]]; then
-        repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
-        log "📥 Clonage du dépôt $repo dans $APPS_DIR (branche $BRANCH)..."
-        sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
-        if [[ $? -eq 0 ]]; then
-            CREATED_DIRS+=("$APPS_DIR/$repo")
-        else
-            log "❌ Échec du clonage du dépôt : $repo"
-        fi
+if [[ "$CLONE_REPOS" =~ ^[oOyY]$ ]]; then
+    echo "📦 Clonage des dépôts activé"
+    
+    # Branche à cloner: interroge si RYVIE_BRANCH n'est pas défini
+    if [ -z "${RYVIE_BRANCH:-}" ]; then
+        read -p "Quelle branche veux-tu cloner ? [main]: " BRANCH_INPUT
+        BRANCH="${BRANCH_INPUT:-main}"
     else
-        log "✅ Dépôt déjà cloné: $repo"
-        sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
+        BRANCH="$RYVIE_BRANCH"
     fi
-done
+    echo "Branche sélectionnée: $BRANCH"
 
-# Clonage de Ryvie dans /opt (devient /opt/Ryvie)
-# Créer le dossier parent avec les bonnes permissions pour permettre le clonage
-for repo in "${REPOS_OPT[@]}"; do
-    sudo mkdir -p "$RYVIE_ROOT/$repo"
-    sudo chown "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo"
-done
+    # Fonction de vérification des identifiants
+    verify_credentials() {
+        local user="$1"
+        local token="$2"
+        local status_code
 
-cd "$RYVIE_ROOT" || { echo "❌ Impossible d'accéder à $RYVIE_ROOT"; exit 1; }
-for repo in "${REPOS_OPT[@]}"; do
-    if [[ ! -d "$repo/.git" ]]; then
-        repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
-        log "📥 Clonage du dépôt $repo dans $RYVIE_ROOT (branche $BRANCH)..."
-        sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
-        if [[ $? -eq 0 ]]; then
-            CREATED_DIRS+=("$RYVIE_ROOT/$repo")
-            # Appliquer les permissions récursives sur le dossier cloné
-            sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo"
-            log "✅ Permissions appliquées sur $RYVIE_ROOT/$repo"
-        else
-            log "❌ Échec du clonage du dépôt : $repo"
-        fi
+        status_code=$(curl -s -o /dev/null -w "%{http_code}" -u "$user:$token" https://api.github.com/user)
+        [[ "$status_code" == "200" ]]
+    }
+
+    # Identifiants GitHub: interroge si non fournis via env
+    if [ -z "${GITHUB_USER:-}" ]; then
+        read -p "Entrez votre nom d'utilisateur GitHub : " GITHUB_USER
+    fi
+    if [ -z "${GITHUB_TOKEN:-}" ]; then
+        read -s -p "Entrez votre token GitHub personnel : " GITHUB_TOKEN
+        echo
+    fi
+    if verify_credentials "$GITHUB_USER" "$GITHUB_TOKEN"; then
+        echo "✅ Authentification GitHub réussie."
     else
-        log "✅ Dépôt déjà cloné: $repo"
-        sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
-        # S'assurer que les permissions sont correctes
-        sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo" || true
+        echo "❌ Authentification GitHub échouée."
+        exit 1
     fi
-done
+
+    # Clonage des dépôts dans /data/apps
+    cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
+    for repo in "${REPOS_APPS[@]}"; do
+        if [[ ! -d "$repo" ]]; then
+            repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
+            log "📥 Clonage du dépôt $repo dans $APPS_DIR (branche $BRANCH)..."
+            sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
+            if [[ $? -eq 0 ]]; then
+                CREATED_DIRS+=("$APPS_DIR/$repo")
+            else
+                log "❌ Échec du clonage du dépôt : $repo"
+            fi
+        else
+            log "✅ Dépôt déjà cloné: $repo"
+            sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
+        fi
+    done
+
+    # Clonage de Ryvie dans /opt (devient /opt/Ryvie)
+    # Créer le dossier parent avec les bonnes permissions pour permettre le clonage
+    for repo in "${REPOS_OPT[@]}"; do
+        sudo mkdir -p "$RYVIE_ROOT/$repo"
+        sudo chown "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo"
+    done
+
+    cd "$RYVIE_ROOT" || { echo "❌ Impossible d'accéder à $RYVIE_ROOT"; exit 1; }
+    for repo in "${REPOS_OPT[@]}"; do
+        if [[ ! -d "$repo/.git" ]]; then
+            repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
+            log "📥 Clonage du dépôt $repo dans $RYVIE_ROOT (branche $BRANCH)..."
+            sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
+            if [[ $? -eq 0 ]]; then
+                CREATED_DIRS+=("$RYVIE_ROOT/$repo")
+                # Appliquer les permissions récursives sur le dossier cloné
+                sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo"
+                log "✅ Permissions appliquées sur $RYVIE_ROOT/$repo"
+            else
+                log "❌ Échec du clonage du dépôt : $repo"
+            fi
+        else
+            log "✅ Dépôt déjà cloné: $repo"
+            sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
+            # S'assurer que les permissions sont correctes
+            sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/$repo" || true
+        fi
+    done
+else
+    echo "⏭️  Clonage des dépôts ignoré (les dépôts doivent déjà exister)"
+    # Vérifier que les dépôts essentiels existent
+    for repo in "${REPOS_APPS[@]}"; do
+        if [[ ! -d "$APPS_DIR/$repo" ]]; then
+            log "⚠️ Attention: $APPS_DIR/$repo n'existe pas"
+        fi
+    done
+    for repo in "${REPOS_OPT[@]}"; do
+        if [[ ! -d "$RYVIE_ROOT/$repo" ]]; then
+            log "⚠️ Attention: $RYVIE_ROOT/$repo n'existe pas"
+        fi
+    done
+fi
 
 # Vérifier si npm est installé
 if command -v npm > /dev/null 2>&1; then
@@ -640,7 +664,7 @@ echo "----------------------------------------------------"
 #!/bin/bash
 #!/bin/bash
 API_URL="https://netbird.ryvie.ovh/api"
-AUTH_TOKEN="nbp_cHLmqd5WmXVgnbVLmpeEvBULkfFNnE1qDgte"
+AUTH_TOKEN="nbp_EUpwD1ujyIic1UGs2ZzbdEAuDauPin2N4L1W"
 MANAGEMENT_URL="https://netbird.ryvie.ovh"
 API_ENDPOINT="https://api.ryvie.ovh/api/register"
 SETUP_KEY_NAME="${1:-$(date +%s)}"
@@ -680,7 +704,7 @@ SETUP_KEY_RESPONSE=$(curl -s -X POST "$API_URL/setup-keys" \
   -H "Authorization: Token $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
-    \"name\": \"$SETUP_KEY_NAME\",
+    \"name\": \"Ryvie-$SETUP_KEY_NAME\",
     \"type\": \"reusable\",
     \"reusable\": true,
     \"ephemeral\": false,
@@ -703,7 +727,7 @@ TCP_POLICY=$(curl -s -X POST "$API_URL/policies" \
   -H "Authorization: Token $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "isolated-tcp-'$SETUP_KEY_NAME'",
+    "name": "Ryvie-isolated-tcp-'$SETUP_KEY_NAME'",
     "description": "Allow TCP ports within isolated group",
     "enabled": true,
     "rules": [
@@ -979,6 +1003,17 @@ get_interface_ip() {
     ip -4 addr show dev "$interface" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1
 }
 
+# Helper: obtenir l'IP NetBird ou fallback sur localhost
+get_netbird_ip() {
+    local ip
+    ip=$(get_interface_ip "$NETBIRD_INTERFACE")
+    if [ -z "$ip" ]; then
+        echo "localhost"
+    else
+        echo "$ip"
+    fi
+}
+
 #==========================================
 # API REGISTRATION FUNCTIONS
 #==========================================
@@ -1083,7 +1118,6 @@ install_jq() {
 # Fonction pour générer le fichier .env
 generate_env_file() {
     local json_file="$CONFIG_DIR/netbird/netbird-data.json"
-    local rdrive_path="$RDRIVE_DIR"
     
     log_info "=== Début de la phase de configuration d'environnement ==="
     log_info "Génération de la configuration d'environnement..."
@@ -1097,58 +1131,58 @@ generate_env_file() {
     # S'assurer que jq est disponible
     install_jq
     
-    # S'assurer que le répertoire RDRIVE_DIR existe
-    if [ ! -d "$rdrive_path" ]; then
-        log_warning "$rdrive_path n'existe pas. Création en cours..."
-        mkdir -p "$rdrive_path" || {
-            log_error "Échec de la création du répertoire $rdrive_path"
-            exit 1
-        }
-    fi
-    
-    # Aller dans le répertoire de l'app rDrive sous /data/apps
-    cd "$rdrive_path" || {
-        log_error "Impossible de changer vers le répertoire $RDRIVE_DIR"
-        exit 1
-    }
-    
-    log_info "Travail dans le répertoire: $(pwd)"
-    
     # Extraire les domaines du fichier JSON
-    local rdrive backend_rdrive connector_rdrive document_rdrive
+    local rtransfer rdrop
     
-    rdrive=$(jq -r '.domains.rdrive' "$json_file")
-    backend_rdrive=$(jq -r '.domains."backend.rdrive"' "$json_file")
-    connector_rdrive=$(jq -r '.domains."connector.rdrive"' "$json_file")
-    document_rdrive=$(jq -r '.domains."document.rdrive"' "$json_file")
+    rtransfer=$(jq -r '.domains.rtransfer' "$json_file")
+    rdrop=$(jq -r '.domains.rdrop' "$json_file")
     
     # Valider l'extraction
-    if [ "$rdrive" = "null" ] || [ "$backend_rdrive" = "null" ] || \
-       [ "$connector_rdrive" = "null" ] || [ "$document_rdrive" = "null" ]; then
+    if [ "$rtransfer" = "null" ] || [ "$rdrop" = "null" ]; then
         log_error "Impossible d'extraire les domaines de $json_file. Vérifiez la structure JSON."
+        log_error "Attendu: .domains.rtransfer et .domains.rdrop"
         exit 1
     fi
     
-    # Générer le fichier .env sous /data/config
-    mkdir -p "$CONFIG_DIR/rdrive"
-    local env_file="$CONFIG_DIR/rdrive/.env"
-    cat > "$env_file" << EOF
-REACT_APP_FRONTEND_URL=https://$rdrive
-REACT_APP_BACKEND_URL=https://$backend_rdrive
-REACT_APP_WEBSOCKET_URL=wss://$backend_rdrive/ws
-REACT_APP_ONLYOFFICE_CONNECTOR_URL=https://$connector_rdrive
-REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=https://$document_rdrive
+    # Générer le fichier .env sous /data/config pour rtransfer et rdrop
+    mkdir -p "$CONFIG_DIR/rtransfer" "$CONFIG_DIR/rdrop"
+    
+    # Fichier .env pour rtransfer
+    local rtransfer_env="$CONFIG_DIR/rtransfer/.env"
+    cat > "$rtransfer_env" << EOF
+APP_URL=https://$rtransfer
 EOF
     
-    log_info "Fichier $env_file généré"
+    # Fichier .env pour rdrop
+    local rdrop_env="$CONFIG_DIR/rdrop/.env"
+    cat > "$rdrop_env" << EOF
+APP_URL=https://$rdrop
+EOF
+    
+    log_info "Fichiers .env générés pour rtransfer et rdrop"
 
-    # --- Déploiement dans $APPS_DIR/$RDRIVE_DIR/.env ---
-    local tdrive_env="$rdrive_path/.env"
-    [ -f "$tdrive_env" ] && cp "$tdrive_env" "$tdrive_env.bak.$(date +%s)" || true
-    cp -f "$env_file" "$tdrive_env"
-    chmod 600 "$tdrive_env" || true
-    chown "$EXEC_USER:$EXEC_USER" "$tdrive_env" 2>/dev/null || true
-    log_info "✅ Nouveau .env déployé → $tdrive_env"
+    # --- Déploiement dans les répertoires des apps ---
+    # rtransfer
+    local rtransfer_app_dir="$APPS_DIR/Ryvie-rTransfer"
+    if [ -d "$rtransfer_app_dir" ]; then
+        local rtransfer_app_env="$rtransfer_app_dir/.env"
+        [ -f "$rtransfer_app_env" ] && cp "$rtransfer_app_env" "$rtransfer_app_env.bak.$(date +%s)" || true
+        cp -f "$rtransfer_env" "$rtransfer_app_env"
+        chmod 600 "$rtransfer_app_env" || true
+        chown "$EXEC_USER:$EXEC_USER" "$rtransfer_app_env" 2>/dev/null || true
+        log_info "✅ .env déployé → $rtransfer_app_env"
+    fi
+    
+    # rdrop
+    local rdrop_app_dir="$APPS_DIR/Ryvie-rdrop"
+    if [ -d "$rdrop_app_dir" ]; then
+        local rdrop_app_env="$rdrop_app_dir/.env"
+        [ -f "$rdrop_app_env" ] && cp "$rdrop_app_env" "$rdrop_app_env.bak.$(date +%s)" || true
+        cp -f "$rdrop_env" "$rdrop_app_env"
+        chmod 600 "$rdrop_app_env" || true
+        chown "$EXEC_USER:$EXEC_USER" "$rdrop_app_env" 2>/dev/null || true
+        log_info "✅ .env déployé → $rdrop_app_env"
+    fi
 
     log_info "Configuration d'environnement terminée"
 }
@@ -1230,7 +1264,7 @@ main() {
     validate_prerequisites
     
     # Detect system
-    detect_system
+    detect_system 
     
     # Execute main phases
     main_netbird_setup
@@ -1695,14 +1729,22 @@ if [ ! -f docker-compose.yml ]; then
   exit 1
 fi
 
-# Le .env front/back est généré plus haut (NetBird → generate_env_file)
-if [ ! -f "$CONFIG_DIR/rdrive/.env" ]; then
-  echo "⚠️ /data/config/rdrive/.env introuvable — tentative de régénération…"
-  generate_env_file || {
-    echo "❌ Impossible de générer /data/config/rdrive/.env"
-    exit 1
-  }
-fi
+# rDrive n'est pas dans l'API, on utilise l'IP NetBird (wt0) + ports
+echo "ℹ️ rDrive utilise l'IP NetBird (wt0) au lieu des domaines API"
+NETBIRD_IP=$(get_netbird_ip)
+
+# Générer le fichier .env pour rDrive avec IP:PORT
+mkdir -p "$CONFIG_DIR/rdrive"
+local rdrive_env="$CONFIG_DIR/rdrive/.env"
+cat > "$rdrive_env" << EOF
+REACT_APP_FRONTEND_URL=http://$NETBIRD_IP:3010
+REACT_APP_BACKEND_URL=http://$NETBIRD_IP:3011
+REACT_APP_WEBSOCKET_URL=ws://$NETBIRD_IP:3011/ws
+REACT_APP_ONLYOFFICE_CONNECTOR_URL=http://$NETBIRD_IP:3012
+REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://$NETBIRD_IP:3013
+EOF
+
+echo "✅ Configuration rDrive générée avec IP NetBird: $NETBIRD_IP"
 
 # (Optionnel) s'assurer que rclone est montable au bon chemin
 if ! [ -x /usr/bin/rclone ]; then
@@ -1714,8 +1756,8 @@ fi
 
 # 2) Lancement unique
 echo "🚀 Démarrage de la stack rDrive…"
-sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" pull || true
-sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" up -d --build
+sudo docker compose --env-file "$rdrive_env" pull || true
+sudo docker compose --env-file "$rdrive_env" up -d --build
 
 # 3) Attentes/health (best-effort)
 echo "⏳ Attente des services (mongo, onlyoffice, node, frontend)…"
@@ -1736,13 +1778,13 @@ wait_for_service() {
     sleep 2
     retries=$((retries-1))
   done
-  echo "⚠️ Timeout d’attente pour $svc"
+  echo "⚠️ Timeout d'attente pour $svc"
   return 1
 }
 
 
 echo "✅ rDrive est lancé via docker-compose unique."
-echo "   Frontend accessible (par défaut) sur http://localhost:3010"
+echo "   Frontend accessible sur http://$NETBIRD_IP:3010"
 
 
 echo "-----------------------------------------------------"
