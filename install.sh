@@ -1106,6 +1106,59 @@ generate_env_file() {
     
     # S'assurer que jq est disponible
     install_jq
+    
+    # Extraire les domaines du fichier JSON
+    local rtransfer rdrop
+    
+    rtransfer=$(jq -r '.domains.rtransfer' "$json_file")
+    rdrop=$(jq -r '.domains.rdrop' "$json_file")
+    
+    # Valider l'extraction
+    if [ "$rtransfer" = "null" ] || [ "$rdrop" = "null" ]; then
+        log_error "Impossible d'extraire les domaines de $json_file. Vérifiez la structure JSON."
+        log_error "Attendu: .domains.rtransfer et .domains.rdrop"
+        exit 1
+    fi
+    
+    # Générer le fichier .env sous /data/config pour rtransfer et rdrop
+    mkdir -p "$CONFIG_DIR/rtransfer" "$CONFIG_DIR/rdrop"
+    
+    # Fichier .env pour rtransfer
+    local rtransfer_env="$CONFIG_DIR/rtransfer/.env"
+    cat > "$rtransfer_env" << EOF
+APP_URL=https://$rtransfer
+EOF
+    
+    # Fichier .env pour rdrop
+    local rdrop_env="$CONFIG_DIR/rdrop/.env"
+    cat > "$rdrop_env" << EOF
+APP_URL=https://$rdrop
+EOF
+    
+    log_info "Fichiers .env générés pour rtransfer et rdrop"
+
+    # --- Déploiement dans les répertoires des apps ---
+    # rtransfer
+    local rtransfer_app_dir="$APPS_DIR/Ryvie-rTransfer"
+    if [ -d "$rtransfer_app_dir" ]; then
+        local rtransfer_app_env="$rtransfer_app_dir/.env"
+        [ -f "$rtransfer_app_env" ] && cp "$rtransfer_app_env" "$rtransfer_app_env.bak.$(date +%s)" || true
+        cp -f "$rtransfer_env" "$rtransfer_app_env"
+        chmod 600 "$rtransfer_app_env" || true
+        chown "$EXEC_USER:$EXEC_USER" "$rtransfer_app_env" 2>/dev/null || true
+        log_info "✅ .env déployé → $rtransfer_app_env"
+    fi
+    
+    # rdrop
+    local rdrop_app_dir="$APPS_DIR/Ryvie-rdrop"
+    if [ -d "$rdrop_app_dir" ]; then
+        local rdrop_app_env="$rdrop_app_dir/.env"
+        [ -f "$rdrop_app_env" ] && cp "$rdrop_app_env" "$rdrop_app_env.bak.$(date +%s)" || true
+        cp -f "$rdrop_env" "$rdrop_app_env"
+        chmod 600 "$rdrop_app_env" || true
+        chown "$EXEC_USER:$EXEC_USER" "$rdrop_app_env" 2>/dev/null || true
+        log_info "✅ .env déployé → $rdrop_app_env"
+    fi
 
     # --- rDrive : génération du .env avec l'IP NetBird ---
     local rdrive_app_dir="$APPS_DIR/Ryvie-rDrive/tdrive"
@@ -1122,12 +1175,12 @@ generate_env_file() {
         
         # Générer le fichier .env dans /data/config/rdrive
         cat > "$rdrive_env" << EOF
-        REACT_APP_FRONTEND_URL=http://$netbird_ip:3010
-        REACT_APP_BACKEND_URL=http://$netbird_ip:4000
-        REACT_APP_WEBSOCKET_URL=ws://$netbird_ip:4000/ws
-        REACT_APP_ONLYOFFICE_CONNECTOR_URL=http://$netbird_ip:5000
-        REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://$netbird_ip:8090
-        EOF
+REACT_APP_FRONTEND_URL=http://$netbird_ip:3010
+REACT_APP_BACKEND_URL=http://$netbird_ip:4000
+REACT_APP_WEBSOCKET_URL=ws://$netbird_ip:4000/ws
+REACT_APP_ONLYOFFICE_CONNECTOR_URL=http://$netbird_ip:5000
+REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://$netbird_ip:8090
+EOF
         
         log_info "✅ .env rDrive généré → $rdrive_env"
         
