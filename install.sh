@@ -637,13 +637,10 @@ echo "----------------------------------------------------"
 # Author: Ryvie Project
 # Version: 1.0
 #==========================================
-#!/bin/bash
-#!/bin/bash
-API_URL="https://netbird.ryvie.ovh/api"
-AUTH_TOKEN="nbp_EUpwD1ujyIic1UGs2ZzbdEAuDauPin2N4L1W"
+
 MANAGEMENT_URL="https://netbird.ryvie.ovh"
 API_ENDPOINT="https://api.ryvie.ovh/api/register"
-SETUP_KEY_NAME="${1:-$(date +%s)}"
+SETUPKEY_API_ENDPOINT="https://api.ryvie.ovh/api/generate-setupkey"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -655,90 +652,34 @@ echo -e "${BLUE}=================================================="
 echo "NetBird Isolated Network Setup"
 echo -e "==================================================${NC}"
 
-# Step 1: Create isolated group
-echo -e "${GREEN}[1/4]${NC} Creating isolated group..."
-GROUP_RESPONSE=$(curl -s -X POST "$API_URL/groups" \
-  -H "Authorization: Token $AUTH_TOKEN" \
+# Call the API to generate setup key automatically
+echo -e "${GREEN}[1/1]${NC} Generating NetBird setup key via API..."
+SETUPKEY_RESPONSE=$(curl -s -X POST "$SETUPKEY_API_ENDPOINT" \
   -H "Content-Type: application/json" \
-  -d "{
-    \"name\": \"Ryvie-$SETUP_KEY_NAME\",
-    \"description\": \"Isolated group - internal communication only\"
-  }")
+  -d '{}')
 
-GROUP_ID=$(echo "$GROUP_RESPONSE" | jq -r '.id // empty')
-
-if [ -z "$GROUP_ID" ] || [ "$GROUP_ID" = "null" ]; then
-  echo -e "${RED}ERROR: Failed to create group${NC}"
-  echo "Response: $GROUP_RESPONSE"
-  exit 1
-fi
-echo "      ✓ Group created: $GROUP_ID"
-
-# Step 2: Create setup key
-echo -e "${GREEN}[2/4]${NC} Creating setup key..."
-SETUP_KEY_RESPONSE=$(curl -s -X POST "$API_URL/setup-keys" \
-  -H "Authorization: Token $AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"name\": \"Ryvie-$SETUP_KEY_NAME\",
-    \"type\": \"reusable\",
-    \"reusable\": true,
-    \"ephemeral\": false,
-    \"auto_groups\": [\"$GROUP_ID\"]
-  }")
-
-SETUP_KEY_VALUE=$(echo "$SETUP_KEY_RESPONSE" | jq -r '.key // .plain_key // empty')
+# Extract values from API response
+SETUP_KEY_VALUE=$(echo "$SETUPKEY_RESPONSE" | jq -r '.setupKey // empty')
+GROUP_ID=$(echo "$SETUPKEY_RESPONSE" | jq -r '.groupId // empty')
+GROUP_NAME=$(echo "$SETUPKEY_RESPONSE" | jq -r '.groupName // empty')
+TCP_POLICY_ID=$(echo "$SETUPKEY_RESPONSE" | jq -r '.tcpPolicyId // empty')
 
 if [ -z "$SETUP_KEY_VALUE" ] || [ "$SETUP_KEY_VALUE" = "null" ]; then
-  echo -e "${RED}ERROR: Failed to create setup key${NC}"
-  echo "Response: $SETUP_KEY_RESPONSE"
+  echo -e "${RED}ERROR: Failed to generate setup key via API${NC}"
+  echo "Response: $SETUPKEY_RESPONSE"
   exit 1
 fi
-echo "      ✓ Setup key created: $SETUP_KEY_VALUE"
 
-# Step 3: Create TCP isolation policy
-echo -e "${GREEN}[3/4]${NC} Creating TCP isolation policy..."
-
-TCP_POLICY=$(curl -s -X POST "$API_URL/policies" \
-  -H "Authorization: Token $AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Ryvie-isolated-tcp-'$SETUP_KEY_NAME'",
-    "description": "Allow TCP ports within isolated group",
-    "enabled": true,
-    "rules": [
-      {
-        "name": "allow-tcp-ports",
-        "description": "Allow TCP ports 80,443,3000-9999",
-        "enabled": true,
-        "sources": ["'$GROUP_ID'"],
-        "destinations": ["'$GROUP_ID'"],
-        "bidirectional": true,
-        "protocol": "tcp",
-        "port_ranges": [
-          {"start": 80, "end": 80},
-          {"start": 443, "end": 443},
-          {"start": 3000, "end": 9999}
-        ],
-        "action": "accept"
-      }
-    ]
-  }')
-
-if echo "$TCP_POLICY" | jq -e '.id' >/dev/null 2>&1; then
-  TCP_POLICY_ID=$(echo "$TCP_POLICY" | jq -r '.id')
-  echo "      ✓ TCP policy created: $TCP_POLICY_ID"
-else
-  echo -e "${YELLOW}      ⚠ Warning: TCP policy failed${NC}"
-  echo "Response: $TCP_POLICY"
-fi
+echo "      ✓ Setup key generated: $SETUP_KEY_VALUE"
+echo "      ✓ Group created: $GROUP_ID ($GROUP_NAME)"
+echo "      ✓ TCP policy created: $TCP_POLICY_ID"
 echo ""
 echo -e "${BLUE}=================================================="
 echo "SETUP COMPLETE ✓"
 echo -e "==================================================${NC}"
 echo ""
 echo -e "${GREEN}Group ID:${NC} $GROUP_ID"
-echo -e "${GREEN}NetBird IP:${NC} $NETBIRD_IP"
+echo -e "${GREEN}Group Name:${NC} $GROUP_NAME"
 echo ""
 echo -e "${GREEN}SETUP KEY (share with other devices):${NC}"
 echo -e "${YELLOW}$SETUP_KEY_VALUE${NC}"
@@ -1061,9 +1002,17 @@ process_api_response() {
 
     if [ -f "$json_file" ]; then
         log_info "Copying $(basename "$json_file") to $TARGET_DIR"
-        mkdir -p "$TARGET_DIR"
-        if cp "$json_file" "$TARGET_DIR/"; then
+        # Créer le répertoire cible avec sudo et donner les permissions à l'utilisateur
+        sudo mkdir -p "$TARGET_DIR"
+        sudo chown -R "$EXEC_USER:$EXEC_USER" "$TARGET_DIR"
+        sudo chmod 755 "$TARGET_DIR"
+        
+        # Copier le fichier en tant qu'utilisateur
+        if sudo -u "$EXEC_USER" cp "$json_file" "$TARGET_DIR/"; then
             log_info "Successfully copied $(basename "$json_file") to $TARGET_DIR"
+            # S'assurer que le fichier copié a les bonnes permissions
+            sudo chown "$EXEC_USER:$EXEC_USER" "$TARGET_DIR/$(basename "$json_file")"
+            sudo chmod 644 "$TARGET_DIR/$(basename "$json_file")"
         else
             log_warning "Failed to copy $(basename "$json_file") to $TARGET_DIR"
         fi
@@ -1891,6 +1840,11 @@ echo "   - Statut: pm2 status"
 # Frontend setup
 echo "🚀 Setting up frontend..."
 cd "$RYVIE_ROOT/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
+
+# S'assurer que l'utilisateur a les permissions sur le répertoire frontend
+echo "🔒 Configuration des permissions du frontend..."
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/Ryvie/Ryvie-Front"
+sudo chmod -R u+rwX "$RYVIE_ROOT/Ryvie/Ryvie-Front"
 
 echo "📦 Installing frontend dependencies..."
 sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
