@@ -1636,7 +1636,7 @@ cd "Ryvie-rTransfer" || { echo "❌ Impossible d'accéder à Ryvie-rTransfer"; e
 pwd
 
 # 3. Lancer rTransfer avec docker-compose.yml
-echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.local.yml..."
+echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.yml..."
 sudo docker compose -f docker-compose.yml up -d
 
 # 4. Vérification du démarrage sur le port 3000
