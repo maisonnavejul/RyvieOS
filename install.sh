@@ -521,7 +521,10 @@ EOF
 fi
 
 # Mettre à jour root et state (state par défaut dans /run/containerd)
-sudo sed -i 's#^\s*root\s*=\s*".*"#root = "'"$CONTAINERD_ROOT"'"#' /etc/containerd/config.toml
+# On supprime toutes les lignes root existantes (commentées OU non),
+# puis on ajoute notre ligne propre tout en haut du fichier.
+sudo sed -i '/^\s*#\s*root\s*=\s*".*"/d;/^\s*root\s*=\s*".*"/d' /etc/containerd/config.toml
+sudo sed -i '1i root = "'"$CONTAINERD_ROOT"'"' /etc/containerd/config.toml
 # Optionnel: déplacer aussi le state (volatile). On laisse par défaut /run/containerd.
 # sudo sed -i 's#^\s*state\s*=\s*".*"#state = "/run/containerd"#' /etc/containerd/config.toml
 
