@@ -638,9 +638,9 @@ echo "----------------------------------------------------"
 # Version: 1.0
 #==========================================
 
-MANAGEMENT_URL="https://netbird.ryvie.ovh"
-API_ENDPOINT="https://api.ryvie.ovh/api/register"
-SETUPKEY_API_ENDPOINT="https://api.ryvie.ovh/api/generate-setupkey"
+MANAGEMENT_URL="https://netbird.ryvie.fr"
+API_ENDPOINT="https://api.ryvie.fr/api/register"
+SETUPKEY_API_ENDPOINT="https://api.ryvie.fr/api/generate-setupkey"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -702,10 +702,10 @@ sudo mv "$tmp_env" "$ENV_FILE"
 sudo chmod 600 "$ENV_FILE" || true
 echo "✅ NetBird setup key and IP written to $ENV_FILE"
 
-readonly MANAGEMENT_URL="https://netbird.ryvie.ovh"
+readonly MANAGEMENT_URL="https://netbird.ryvie.fr"
 readonly SETUP_KEY=$SETUP_KEY_VALUE
 
-readonly API_ENDPOINT="https://api.ryvie.ovh/api/register"
+readonly API_ENDPOINT="https://api.ryvie.fr/api/register"
 readonly NETBIRD_INTERFACE="wt0"
 readonly TARGET_DIR="$RYVIE_ROOT/Ryvie/Ryvie-Front/src/config"
 RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
