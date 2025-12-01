@@ -521,7 +521,10 @@ EOF
 fi
 
 # Mettre à jour root et state (state par défaut dans /run/containerd)
-sudo sed -i 's#^\s*root\s*=\s*".*"#root = "'"$CONTAINERD_ROOT"'"#' /etc/containerd/config.toml
+# On supprime toutes les lignes root existantes (commentées OU non),
+# puis on ajoute notre ligne propre tout en haut du fichier.
+sudo sed -i '/^\s*#\s*root\s*=\s*".*"/d;/^\s*root\s*=\s*".*"/d' /etc/containerd/config.toml
+sudo sed -i '1i root = "'"$CONTAINERD_ROOT"'"' /etc/containerd/config.toml
 # Optionnel: déplacer aussi le state (volatile). On laisse par défaut /run/containerd.
 # sudo sed -i 's#^\s*state\s*=\s*".*"#state = "/run/containerd"#' /etc/containerd/config.toml
 
@@ -638,14 +641,74 @@ echo "----------------------------------------------------"
 # Version: 1.0
 #==========================================
 
+MANAGEMENT_URL="https://netbird.ryvie.fr"
+API_ENDPOINT="https://api.ryvie.fr/api/register"
+SETUPKEY_API_ENDPOINT="https://api.ryvie.fr/api/generate-setupkey"
 
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-#==========================================
-# CONFIGURATION
-#==========================================
+echo -e "${BLUE}=================================================="
+echo "NetBird Isolated Network Setup"
+echo -e "==================================================${NC}"
+
+# Call the API to generate setup key automatically
+echo -e "${GREEN}[1/1]${NC} Generating NetBird setup key via API..."
+SETUPKEY_RESPONSE=$(curl -s -X POST "$SETUPKEY_API_ENDPOINT" \
+  -H "Content-Type: application/json" \
+  -d '{}')
+
+# Extract values from API response
+SETUP_KEY_VALUE=$(echo "$SETUPKEY_RESPONSE" | jq -r '.setupKey // empty')
+GROUP_ID=$(echo "$SETUPKEY_RESPONSE" | jq -r '.groupId // empty')
+GROUP_NAME=$(echo "$SETUPKEY_RESPONSE" | jq -r '.groupName // empty')
+TCP_POLICY_ID=$(echo "$SETUPKEY_RESPONSE" | jq -r '.tcpPolicyId // empty')
+
+if [ -z "$SETUP_KEY_VALUE" ] || [ "$SETUP_KEY_VALUE" = "null" ]; then
+  echo -e "${RED}ERROR: Failed to generate setup key via API${NC}"
+  echo "Response: $SETUPKEY_RESPONSE"
+  exit 1
+fi
+
+echo "      ✓ Setup key generated: $SETUP_KEY_VALUE"
+echo "      ✓ Group created: $GROUP_ID ($GROUP_NAME)"
+echo "      ✓ TCP policy created: $TCP_POLICY_ID"
+echo ""
+echo -e "${BLUE}=================================================="
+echo "SETUP COMPLETE ✓"
+echo -e "==================================================${NC}"
+echo ""
+echo -e "${GREEN}Group ID:${NC} $GROUP_ID"
+echo -e "${GREEN}Group Name:${NC} $GROUP_NAME"
+echo ""
+echo -e "${GREEN}SETUP KEY (share with other devices):${NC}"
+echo -e "${YELLOW}$SETUP_KEY_VALUE${NC}"
+echo ""
+echo -e "${GREEN}✓ Peers in this group CAN communicate with each other${NC}"
+echo -e "${RED}✗ Isolated from All group (external networks)${NC}"
+echo ""
+echo -e "${BLUE}==================================================${NC}"
+
+ENV_FILE="$CONFIG_DIR/netbird/.env"
+sudo mkdir -p "$CONFIG_DIR/netbird"
+sudo touch "$ENV_FILE"
+sudo chown "$EXEC_USER:$EXEC_USER" "$ENV_FILE" || true
+tmp_env="$(mktemp)"
+if [ -s "$ENV_FILE" ]; then
+  grep -vE '^(NETBIRD_SETUP_KEY|NETBIRD_IP)=' "$ENV_FILE" > "$tmp_env" 2>/dev/null || true
+fi
+printf 'NETBIRD_SETUP_KEY=%s\n%s\n' "$SETUP_KEY_VALUE" >> "$tmp_env"
+sudo mv "$tmp_env" "$ENV_FILE"
+sudo chmod 600 "$ENV_FILE" || true
+echo "✅ NetBird setup key and IP written to $ENV_FILE"
+
 readonly MANAGEMENT_URL="https://netbird.ryvie.fr"
-readonly SETUP_KEY="80E89E44-5EC4-42D5-A555-781CC1CC8CD1"
-readonly API_ENDPOINT="http://netbird.ryvie.fr:8088/api/register"
+readonly SETUP_KEY=$SETUP_KEY_VALUE
+
+readonly API_ENDPOINT="https://api.ryvie.fr/api/register"
 readonly NETBIRD_INTERFACE="wt0"
 readonly TARGET_DIR="$RYVIE_ROOT/Ryvie/Ryvie-Front/src/config"
 RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
@@ -860,6 +923,17 @@ get_interface_ip() {
     ip -4 addr show dev "$interface" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1
 }
 
+# Helper: obtenir l'IP NetBird ou fallback sur localhost
+get_netbird_ip() {
+    local ip
+    ip=$(get_interface_ip "$NETBIRD_INTERFACE")
+    if [ -z "$ip" ]; then
+        echo "localhost"
+    else
+        echo "$ip"
+    fi
+}
+
 #==========================================
 # API REGISTRATION FUNCTIONS
 #==========================================
@@ -887,9 +961,7 @@ register_with_api() {
     "os": "$DETECTED_OS",
     "backendHost": "$ip",
     "services": [
-        "rdrive", "rtransfer", "rdrop", "rpictures",
-        "app", "status",
-        "backend.rdrive", "connector.rdrive", "document.rdrive"
+       "rtransfer", "rdrop"
     ]
 }
 EOF
@@ -933,9 +1005,17 @@ process_api_response() {
 
     if [ -f "$json_file" ]; then
         log_info "Copying $(basename "$json_file") to $TARGET_DIR"
-        mkdir -p "$TARGET_DIR"
-        if cp "$json_file" "$TARGET_DIR/"; then
+        # Créer le répertoire cible avec sudo et donner les permissions à l'utilisateur
+        sudo mkdir -p "$TARGET_DIR"
+        sudo chown -R "$EXEC_USER:$EXEC_USER" "$TARGET_DIR"
+        sudo chmod 755 "$TARGET_DIR"
+        
+        # Copier le fichier en tant qu'utilisateur
+        if sudo -u "$EXEC_USER" cp "$json_file" "$TARGET_DIR/"; then
             log_info "Successfully copied $(basename "$json_file") to $TARGET_DIR"
+            # S'assurer que le fichier copié a les bonnes permissions
+            sudo chown "$EXEC_USER:$EXEC_USER" "$TARGET_DIR/$(basename "$json_file")"
+            sudo chmod 644 "$TARGET_DIR/$(basename "$json_file")"
         else
             log_warning "Failed to copy $(basename "$json_file") to $TARGET_DIR"
         fi
@@ -966,7 +1046,6 @@ install_jq() {
 # Fonction pour générer le fichier .env
 generate_env_file() {
     local json_file="$CONFIG_DIR/netbird/netbird-data.json"
-    local rdrive_path="$RDRIVE_DIR"
     
     log_info "=== Début de la phase de configuration d'environnement ==="
     log_info "Génération de la configuration d'environnement..."
@@ -980,58 +1059,93 @@ generate_env_file() {
     # S'assurer que jq est disponible
     install_jq
     
-    # S'assurer que le répertoire RDRIVE_DIR existe
-    if [ ! -d "$rdrive_path" ]; then
-        log_warning "$rdrive_path n'existe pas. Création en cours..."
-        mkdir -p "$rdrive_path" || {
-            log_error "Échec de la création du répertoire $rdrive_path"
-            exit 1
-        }
-    fi
-    
-    # Aller dans le répertoire de l'app rDrive sous /data/apps
-    cd "$rdrive_path" || {
-        log_error "Impossible de changer vers le répertoire $RDRIVE_DIR"
-        exit 1
-    }
-    
-    log_info "Travail dans le répertoire: $(pwd)"
-    
     # Extraire les domaines du fichier JSON
-    local rdrive backend_rdrive connector_rdrive document_rdrive
+    local rtransfer rdrop
     
-    rdrive=$(jq -r '.domains.rdrive' "$json_file")
-    backend_rdrive=$(jq -r '.domains."backend.rdrive"' "$json_file")
-    connector_rdrive=$(jq -r '.domains."connector.rdrive"' "$json_file")
-    document_rdrive=$(jq -r '.domains."document.rdrive"' "$json_file")
+    rtransfer=$(jq -r '.domains.rtransfer' "$json_file")
+    rdrop=$(jq -r '.domains.rdrop' "$json_file")
     
     # Valider l'extraction
-    if [ "$rdrive" = "null" ] || [ "$backend_rdrive" = "null" ] || \
-       [ "$connector_rdrive" = "null" ] || [ "$document_rdrive" = "null" ]; then
+    if [ "$rtransfer" = "null" ] || [ "$rdrop" = "null" ]; then
         log_error "Impossible d'extraire les domaines de $json_file. Vérifiez la structure JSON."
+        log_error "Attendu: .domains.rtransfer et .domains.rdrop"
         exit 1
     fi
     
-    # Générer le fichier .env sous /data/config
-    mkdir -p "$CONFIG_DIR/rdrive"
-    local env_file="$CONFIG_DIR/rdrive/.env"
-    cat > "$env_file" << EOF
-REACT_APP_FRONTEND_URL=https://$rdrive
-REACT_APP_BACKEND_URL=https://$backend_rdrive
-REACT_APP_WEBSOCKET_URL=wss://$backend_rdrive/ws
-REACT_APP_ONLYOFFICE_CONNECTOR_URL=https://$connector_rdrive
-REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=https://$document_rdrive
+    # Générer le fichier .env sous /data/config pour rtransfer et rdrop
+    mkdir -p "$CONFIG_DIR/rtransfer" "$CONFIG_DIR/rdrop"
+    
+    # Fichier .env pour rtransfer
+    local rtransfer_env="$CONFIG_DIR/rtransfer/.env"
+    cat > "$rtransfer_env" << EOF
+APP_URL=https://$rtransfer
 EOF
     
-    log_info "Fichier $env_file généré"
+    # Fichier .env pour rdrop
+    local rdrop_env="$CONFIG_DIR/rdrop/.env"
+    cat > "$rdrop_env" << EOF
+APP_URL=https://$rdrop
+EOF
+    
+    log_info "Fichiers .env générés pour rtransfer et rdrop"
 
-    # --- Déploiement dans $APPS_DIR/$RDRIVE_DIR/.env ---
-    local tdrive_env="$rdrive_path/.env"
-    [ -f "$tdrive_env" ] && cp "$tdrive_env" "$tdrive_env.bak.$(date +%s)" || true
-    cp -f "$env_file" "$tdrive_env"
-    chmod 600 "$tdrive_env" || true
-    chown "$EXEC_USER:$EXEC_USER" "$tdrive_env" 2>/dev/null || true
-    log_info "✅ Nouveau .env déployé → $tdrive_env"
+    # --- Déploiement dans les répertoires des apps ---
+    # rtransfer
+    local rtransfer_app_dir="$APPS_DIR/Ryvie-rTransfer"
+    if [ -d "$rtransfer_app_dir" ]; then
+        local rtransfer_app_env="$rtransfer_app_dir/.env"
+        [ -f "$rtransfer_app_env" ] && cp "$rtransfer_app_env" "$rtransfer_app_env.bak.$(date +%s)" || true
+        cp -f "$rtransfer_env" "$rtransfer_app_env"
+        chmod 600 "$rtransfer_app_env" || true
+        chown "$EXEC_USER:$EXEC_USER" "$rtransfer_app_env" 2>/dev/null || true
+        log_info "✅ .env déployé → $rtransfer_app_env"
+    fi
+    
+    # rdrop
+    local rdrop_app_dir="$APPS_DIR/Ryvie-rdrop"
+    if [ -d "$rdrop_app_dir" ]; then
+        local rdrop_app_env="$rdrop_app_dir/.env"
+        [ -f "$rdrop_app_env" ] && cp "$rdrop_app_env" "$rdrop_app_env.bak.$(date +%s)" || true
+        cp -f "$rdrop_env" "$rdrop_app_env"
+        chmod 600 "$rdrop_app_env" || true
+        chown "$EXEC_USER:$EXEC_USER" "$rdrop_app_env" 2>/dev/null || true
+        log_info "✅ .env déployé → $rdrop_app_env"
+    fi
+
+    # --- rDrive : génération du .env avec l'IP NetBird ---
+    local rdrive_app_dir="$APPS_DIR/Ryvie-rDrive/tdrive"
+    if [ -d "$rdrive_app_dir" ]; then
+        log_info "Génération du .env pour rDrive..."
+        
+        # Créer le dossier config/rdrive
+        mkdir -p "$CONFIG_DIR/rdrive"
+        local rdrive_env="$CONFIG_DIR/rdrive/.env"
+        
+        # Récupérer l'IP NetBird
+        local netbird_ip
+        netbird_ip=$(get_netbird_ip)
+        
+        # Générer le fichier .env dans /data/config/rdrive
+        cat > "$rdrive_env" << EOF
+REACT_APP_FRONTEND_URL=http://$netbird_ip:3010
+REACT_APP_BACKEND_URL=http://$netbird_ip:4000
+REACT_APP_WEBSOCKET_URL=ws://$netbird_ip:4000/ws
+REACT_APP_ONLYOFFICE_CONNECTOR_URL=http://$netbird_ip:5000
+REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://$netbird_ip:8090
+EOF
+        
+        log_info "✅ .env rDrive généré → $rdrive_env"
+        
+        # Déployer dans le répertoire de l'app
+        local rdrive_app_env="$rdrive_app_dir/.env"
+        [ -f "$rdrive_app_env" ] && cp "$rdrive_app_env" "$rdrive_app_env.bak.$(date +%s)" || true
+        cp -f "$rdrive_env" "$rdrive_app_env"
+        chmod 600 "$rdrive_app_env" || true
+        chown "$EXEC_USER:$EXEC_USER" "$rdrive_app_env" 2>/dev/null || true
+        log_info "✅ .env déployé → $rdrive_app_env"
+    else
+        log_info "⚠️ Ryvie-rDrive non trouvé, skip de la génération du .env rDrive"
+    fi
 
     log_info "Configuration d'environnement terminée"
 }
@@ -1113,7 +1227,7 @@ main() {
     validate_prerequisites
     
     # Detect system
-    detect_system
+    detect_system 
     
     # Execute main phases
     main_netbird_setup
@@ -1131,7 +1245,7 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
-
+sudo chown ryvie:ryvie /data/config/netbird/.env
 
 echo ""
 echo "----------------------------------------------------"
@@ -1474,7 +1588,7 @@ cd "Ryvie-rTransfer" || { echo "❌ Impossible d'accéder à Ryvie-rTransfer"; e
 pwd
 
 # 3. Lancer rTransfer avec docker-compose.yml
-echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.local.yml..."
+echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.yml..."
 sudo docker compose -f docker-compose.yml up -d
 
 # 4. Vérification du démarrage sur le port 3000
@@ -1729,6 +1843,11 @@ echo "   - Statut: pm2 status"
 # Frontend setup
 echo "🚀 Setting up frontend..."
 cd "$RYVIE_ROOT/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
+
+# S'assurer que l'utilisateur a les permissions sur le répertoire frontend
+echo "🔒 Configuration des permissions du frontend..."
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/Ryvie/Ryvie-Front"
+sudo chmod -R u+rwX "$RYVIE_ROOT/Ryvie/Ryvie-Front"
 
 echo "📦 Installing frontend dependencies..."
 sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
