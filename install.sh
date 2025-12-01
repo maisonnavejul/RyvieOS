@@ -1743,7 +1743,7 @@ echo "   Frontend accessible (par défaut) sur http://localhost:3010"
 
 
 echo "-----------------------------------------------------"
-echo "Étape 15: Installation et lancement du Back-end-view et Front-end"
+echo "Étape 15: Installation et lancement du Ryvie-Back et Front-end"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
@@ -1755,10 +1755,11 @@ if [ ! -d "Ryvie" ]; then
     exit 1
 fi
 
-# Aller dans le dossier Back-end-view
-cd "Ryvie/Back-end-view" || { echo "❌ Dossier 'Ryvie/Back-end-view' introuvable"; exit 1; }
+# Aller dans le dossier Ryvie-Back
+cd "Ryvie/Ryvie-Back" || { echo "❌ Dossier 'Ryvie/Ryvie-Back' introuvable"; exit 1; }
 
-
+# Vérifier si .env existe, sinon le créer
+if [ ! -f ".env" ] && [ ! -L ".env" ]; then
   echo "⚠️ Aucun .env trouvé. Création d'un fichier .env par défaut sous $CONFIG_DIR/backend-view et symlink local..."
   mkdir -p "$CONFIG_DIR/backend-view"
   cat > "$CONFIG_DIR/backend-view/.env" << 'EOL'
@@ -1800,6 +1801,7 @@ EOL
   # Créer un symlink local .env vers /data/config pour compatibilité
   ln -sf "$CONFIG_DIR/backend-view/.env" .env
   echo "✅ Fichier .env par défaut créé et lié: $CONFIG_DIR/backend-view/.env -> $(pwd)/.env"
+fi
 
 # Installer PM2 globalement si ce n'est pas déjà fait
 if ! command -v pm2 &> /dev/null; then
@@ -1813,15 +1815,24 @@ fi
 echo "📦 Installation des dépendances (npm install)"
 sudo -u "$EXEC_USER" npm install || { echo "❌ npm install a échoué"; exit 1; }
 
+# Compiler le projet TypeScript
+echo "🔨 Compilation du projet TypeScript..."
+sudo -u "$EXEC_USER" npm run build || { echo "❌ La compilation TypeScript a échoué"; exit 1; }
+
+# Vérifier que le fichier compilé existe
+if [ ! -f "dist/index.js" ]; then
+    echo "❌ Le fichier dist/index.js n'existe pas après la compilation"
+    exit 1
+fi
 
 # Démarrer ou redémarrer le service avec PM2
-echo "🚀 Démarrage du Back-end-view avec PM2..."
+echo "🚀 Démarrage du Ryvie-Back avec PM2..."
 if sudo -u "$EXEC_USER" pm2 describe backend-view > /dev/null 2>&1; then
     echo "🔄 Redémarrage du service backend-view existant..."
     sudo -u "$EXEC_USER" pm2 restart backend-view --update-env
 else
     echo "✨ Création d'un nouveau service PM2 pour backend-view..."
-    sudo -u "$EXEC_USER" pm2 start index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
+    sudo -u "$EXEC_USER" pm2 start dist/index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
 fi
 
 # Sauvegarder la configuration PM2
@@ -1830,13 +1841,14 @@ sudo -u "$EXEC_USER" pm2 save
 # Configurer PM2 pour le démarrage automatique
 sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
 
-echo "✅ Back-end-view est géré par PM2"
+echo "✅ Ryvie-Back est géré par PM2 (TypeScript compilé)"
 echo "📝 Logs d'accès: $LOG_DIR/backend-view-out.log"
 echo "📝 Logs d'erreur: $LOG_DIR/backend-error.log"
 echo "ℹ️ Commandes utiles:"
 echo "   - Voir les logs: pm2 logs backend-view"
 echo "   - Arrêter: pm2 stop backend-view"
 echo "   - Redémarrer: pm2 restart backend-view"
+echo "   - Recompiler et redémarrer: cd $RYVIE_ROOT/Ryvie/Ryvie-Back && npm run build && pm2 restart backend-view"
 echo "   - Arrêter tout: pm2 stop all"
 echo "   - Statut: pm2 status"
 
@@ -1863,6 +1875,9 @@ fi
 
 # Save PM2 configuration
 sudo -u "$EXEC_USER" pm2 save
+
+echo "✅ Installation et démarrage terminés!"
+echo "📊 Vérifier le statut: pm2 status"
 
 echo "✅ Frontend is now managed by PM2"
 echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
@@ -1895,7 +1910,7 @@ echo "✅ Installation Ryvie OS terminée !"
 echo "======================================================"
 echo ""
 echo "📍 Architecture créée :"
-echo "   /opt/Ryvie/               → Application principale (Back-end-view, Front-end)"
+echo "   /opt/Ryvie/               → Application principale (Ryvie-Back, Ryvie-Front)"
 echo "   /data/apps/               → Applications Ryvie (rPictures, rDrive, rdrop, rTransfer)"
 echo "   /data/apps/portainer/     → Données Portainer"
 echo "   /data/config/ldap/        → Configuration OpenLDAP"
