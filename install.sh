@@ -1346,7 +1346,8 @@ sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf 
 sudo systemctl restart avahi-daemon || true
 
 echo ""
-echo "Etape 12: Configuration d'OpenLDAP avec Docker Compose"
+echo "-----------------------------------------------------"
+echo "Étape 10: Configuration d'OpenLDAP avec Docker Compose"
 echo "-----------------------------------------------------"
 
 # 1. Créer le dossier ldap sous /data/config et s'y positionner
@@ -1492,258 +1493,7 @@ echo "✅ Configuration ACL pour le groupe admins appliquée."
  echo " ( à implémenter non mis car mdp dedans )"
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 10: Installation de Ryvie rPictures"
-echo "-----------------------------------------------------"
-# 1. Se placer dans le dossier des applications (APPS_DIR défini en haut)
-echo "📁 Dossier sélectionné : $APPS_DIR"
-cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
-
-# 2. Cloner le dépôt si pas déjà présent
-if [ -d "Ryvie-rPictures" ]; then
-    echo "✅ Le dépôt Ryvie-rPictures existe déjà."
-else
-    echo "📥 Clonage du dépôt Ryvie-rPictures..."
-    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rPictures.git
-    if [ $? -ne 0 ]; then
-        echo "❌ Échec du clonage du dépôt. Arrêt du script."
-        exit 1
-    fi
-fi
-
-
-# 3. Se placer dans le dossier docker
-cd "$APPS_DIR/Ryvie-rPictures/docker"
-
-# 4. Créer le fichier .env avec les variables nécessaires
-echo "📝 Création du fichier .env..."
-
-cat <<EOF > .env
-# The location where your uploaded files are stored
-UPLOAD_LOCATION=./library
-
-# The location where your database files are stored. Network shares are not supported for the database
-DB_DATA_LOCATION=./postgres
-
-# To set a timezone, uncomment the next line and change Etc/UTC to a TZ identifier from this list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List
-# TZ=Etc/UTC
-
-# The Immich version to use. You can pin this to a specific version like "v2.1.0"
-IMMICH_VERSION=v2
-
-# Connection secret for postgres. You should change it to a random password
-# Please use only the characters `A-Za-z0-9`, without special characters or spaces
-DB_PASSWORD=postgres
-
-# The values below this line do not need to be changed
-###################################################################################
-DB_USERNAME=postgres
-DB_DATABASE_NAME=immich
-
-LDAP_URL= ldap://openldap:1389
-LDAP_BIND_DN=cn=admin,dc=example,dc=org
-LDAP_BIND_PASSWORD=adminpassword
-LDAP_BASE_DN=dc=example,dc=org
-LDAP_USER_BASE_DN=ou=users,dc=example,dc=org
-LDAP_USER_FILTER=(objectClass=inetOrgPerson)
-LDAP_ADMIN_GROUP=admins
-LDAP_EMAIL_ATTRIBUTE=mail
-LDAP_NAME_ATTRIBUTE=cn
-LDAP_PASSWORD_ATTRIBUTE=userPassword
-EOF
-
-echo "✅ Fichier .env créé."
-
-# 5. Lancer les services Immich en mode production
-echo "🚀 Lancement de rPictures avec Docker Compose..."
-sudo docker compose -f docker-compose.yml up -d
-
-# 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
-echo "⏳ Attente du démarrage de rPictures (port 3013)..."
-until curl -s http://localhost:3013 > /dev/null; do
-    sleep 2
-    echo -n "."
-done
-echo ""
-echo "✅ rPictures est lancé."
-echo "ℹ️ Note: La synchronisation LDAP se fera après la création du premier utilisateur."
-
-echo ""
-echo "-----------------------------------------------------"
-echo "Étape 11: Installation de Ryvie rTransfer"
-echo "-----------------------------------------------------"
-
-# Aller dans le dossier de travail /data/apps
-cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
-
-# 1. Cloner le dépôt si pas déjà présent
-if [ -d "Ryvie-rTransfer" ]; then
-    echo "✅ Le dépôt Ryvie-rTransfer existe déjà."
-else
-    echo "📥 Clonage du dépôt Ryvie-rTransfer..."
-    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git || { echo "❌ Échec du clonage"; exit 1; }
-fi
-
-# 2. Se placer dans le dossier Ryvie-rTransfer
-cd "Ryvie-rTransfer" || { echo "❌ Impossible d'accéder à Ryvie-rTransfer"; exit 1; }
-pwd
-
-# 3. Lancer rTransfer avec docker-compose.yml
-echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.yml..."
-sudo docker compose -f docker-compose.yml up -d
-
-# 4. Vérification du démarrage sur le port 3000
-echo "⏳ Attente du démarrage de rTransfer (port 3011)..."
-until curl -s http://localhost:3011 > /dev/null; do
-    sleep 2
-    echo -n "."
-done
-echo ""
-echo "✅ rTransfer est lancé et prêt avec l’authentification LDAP."
-
-
-echo ""
-echo "-----------------------------------------------------"
-echo "-----------------------------------------------------"
-echo "Étape 12: Installation de Ryvie rDrop"
-echo "-----------------------------------------------------"
-
-cd "$APPS_DIR"
-
-if [ -d "Ryvie-rdrop" ]; then
-    echo "✅ Le dépôt Ryvie-rdrop existe déjà."
-else
-    echo "📥 Clonage du dépôt Ryvie-rdrop..."
-    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
-    if [ $? -ne 0 ]; then
-        echo "❌ Échec du clonage du dépôt Ryvie-rdrop."
-        exit 1
-    fi
-fi
-
-cd Ryvie-rdrop/rDrop-main
-
-echo "✅ Répertoire atteint : $(pwd)"
-
-if [ -f docker/openssl/create.sh ]; then
-    chmod +x docker/openssl/create.sh
-    echo "✅ Script create.sh rendu exécutable."
-else
-    echo "❌ Script docker/openssl/create.sh introuvable."
-    exit 1
-fi
-
-echo "📦 Suppression des conteneurs orphelins..."
-sudo docker compose down --remove-orphans
-sudo docker compose up -d
-
-echo ""
-echo "-----------------------------------------------------"
-echo "Étape 13: Installation et préparation de Rclone"
-echo "-----------------------------------------------------"
-
-# Installer/mettre à jour Rclone (méthode officielle)
-# (réexécutable sans risque : met à jour si déjà installé)
-curl -fsSL https://rclone.org/install.sh | sudo bash
-
-# Vérifie qu’il est bien là :
-# - essaie /usr/bin/rclone comme demandé
-# - sinon affiche l’emplacement réel retourné par command -v
-command -v rclone && ls -l /usr/bin/rclone || {
-  echo "ℹ️ rclone n'est pas sous /usr/bin, emplacement détecté :"
-  command -v rclone
-  ls -l "$(command -v rclone)" 2>/dev/null || true
-}
-
-# Version pour confirmation
-rclone version || true
-
-# Rclone – config centralisée sous /data/config/rclone
-mkdir -p "$CONFIG_DIR/rclone"
-touch "$CONFIG_DIR/rclone/rclone.conf"
-chmod 600 "$CONFIG_DIR/rclone/rclone.conf"
-sudo chown root:root "$CONFIG_DIR/rclone/rclone.conf" || true
-
-# Option pratique (host uniquement) : symlink facultatif pour compatibilité
-sudo mkdir -p /root/.config
-if [ ! -L /root/.config/rclone ]; then
-  sudo rm -rf /root/.config/rclone 2>/dev/null || true
-  sudo ln -s "$CONFIG_DIR/rclone" /root/.config/rclone
-fi
-
-# Export pour les sessions shell (host)
-export RCLONE_CONFIG="$CONFIG_DIR/rclone/rclone.conf"
-grep -q 'RCLONE_CONFIG=' /etc/profile.d/ryvie_rclone.sh 2>/dev/null || \
-  echo 'export RCLONE_CONFIG=/data/config/rclone/rclone.conf' | sudo tee /etc/profile.d/ryvie_rclone.sh >/dev/null
-
-echo ""
-echo "-----------------------------------------------------"
-echo "Étape 14: Installation et lancement de Ryvie rDrive (compose unique)"
-echo "-----------------------------------------------------"
-
-# Dossier rDrive
-RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
-
-# 1) Vérifier la présence du compose et du .env
-cd "$RDRIVE_DIR" || { echo "❌ Impossible d'accéder à $RDRIVE_DIR"; exit 1; }
-
-if [ ! -f docker-compose.yml ]; then
-  echo "❌ docker-compose.yml introuvable dans $RDRIVE_DIR"
-  echo "   Place le fichier docker-compose.yml ici puis relance."
-  exit 1
-fi
-
-# Le .env front/back est généré plus haut (NetBird → generate_env_file)
-if [ ! -f "$CONFIG_DIR/rdrive/.env" ]; then
-  echo "⚠️ /data/config/rdrive/.env introuvable — tentative de régénération…"
-  generate_env_file || {
-    echo "❌ Impossible de générer /data/config/rdrive/.env"
-    exit 1
-  }
-fi
-
-# (Optionnel) s'assurer que rclone est montable au bon chemin
-if ! [ -x /usr/bin/rclone ]; then
-  RBIN="$(command -v rclone || true)"
-  if [ -n "$RBIN" ]; then
-    sudo ln -sf "$RBIN" /usr/bin/rclone
-  fi
-fi
-
-# 2) Lancement unique
-echo "🚀 Démarrage de la stack rDrive…"
-sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" pull || true
-sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" up -d --build
-
-# 3) Attentes/health (best-effort)
-echo "⏳ Attente des services (mongo, onlyoffice, node, frontend)…"
-wait_for_service() {
-  local svc="$1"
-  local retries=60
-  while [ $retries -gt 0 ]; do
-    if sudo docker compose ps --format json | jq -e ".[] | select(.Service==\"$svc\") | .State==\"running\"" >/dev/null 2>&1; then
-      # si health est défini, essaye de lire
-      if sudo docker inspect --format='{{json .State.Health}}' "$(sudo docker compose ps -q "$svc")" 2>/dev/null | jq -e '.Status=="healthy"' >/dev/null 2>&1; then
-        echo "✅ $svc healthy"
-        return 0
-      fi
-      # sinon, running suffit
-      echo "✅ $svc en cours d'exécution"
-      return 0
-    fi
-    sleep 2
-    retries=$((retries-1))
-  done
-  echo "⚠️ Timeout d’attente pour $svc"
-  return 1
-}
-
-
-echo "✅ rDrive est lancé via docker-compose unique."
-echo "   Frontend accessible (par défaut) sur http://localhost:3010"
-
-
-echo "-----------------------------------------------------"
-echo "Étape 15: Installation et lancement du Ryvie-Back et Front-end"
+echo "Étape 11: Installation et lancement du Ryvie-Back et Front-end"
 echo "-----------------------------------------------------"
 
 # S'assurer d'être dans le répertoire de travail
@@ -1887,6 +1637,256 @@ echo "   - Stop: pm2 stop ryvie-frontend"
 echo "   - Restart: pm2 restart ryvie-frontend"
 echo "   - Stop everything: pm2 stop all"
 echo "   - Status: pm2 status"
+
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 12: Installation de Ryvie rPictures"
+echo "-----------------------------------------------------"
+# 1. Se placer dans le dossier des applications (APPS_DIR défini en haut)
+echo "📁 Dossier sélectionné : $APPS_DIR"
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
+
+# 2. Cloner le dépôt si pas déjà présent
+if [ -d "Ryvie-rPictures" ]; then
+    echo "✅ Le dépôt Ryvie-rPictures existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie-rPictures..."
+    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rPictures.git
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt. Arrêt du script."
+        exit 1
+    fi
+fi
+
+
+# 3. Se placer dans le dossier docker
+cd "$APPS_DIR/Ryvie-rPictures/docker"
+
+# 4. Créer le fichier .env avec les variables nécessaires
+echo "📝 Création du fichier .env..."
+
+cat <<EOF > .env
+# The location where your uploaded files are stored
+UPLOAD_LOCATION=./library
+
+# The location where your database files are stored. Network shares are not supported for the database
+DB_DATA_LOCATION=./postgres
+
+# To set a timezone, uncomment the next line and change Etc/UTC to a TZ identifier from this list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List
+# TZ=Etc/UTC
+
+# The Immich version to use. You can pin this to a specific version like "v2.1.0"
+IMMICH_VERSION=v2
+
+# Connection secret for postgres. You should change it to a random password
+# Please use only the characters \`A-Za-z0-9\`, without special characters or spaces
+DB_PASSWORD=postgres
+
+# The values below this line do not need to be changed
+###################################################################################
+DB_USERNAME=postgres
+DB_DATABASE_NAME=immich
+
+LDAP_URL= ldap://openldap:1389
+LDAP_BIND_DN=cn=admin,dc=example,dc=org
+LDAP_BIND_PASSWORD=adminpassword
+LDAP_BASE_DN=dc=example,dc=org
+LDAP_USER_BASE_DN=ou=users,dc=example,dc=org
+LDAP_USER_FILTER=(objectClass=inetOrgPerson)
+LDAP_ADMIN_GROUP=admins
+LDAP_EMAIL_ATTRIBUTE=mail
+LDAP_NAME_ATTRIBUTE=cn
+LDAP_PASSWORD_ATTRIBUTE=userPassword
+EOF
+
+echo "✅ Fichier .env créé."
+
+# 5. Lancer les services Immich en mode production
+echo "🚀 Lancement de rPictures avec Docker Compose..."
+sudo docker compose -f docker-compose.yml up -d
+
+# 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
+echo "⏳ Attente du démarrage de rPictures (port 3013)..."
+until curl -s http://localhost:3013 > /dev/null; do
+    sleep 2
+    echo -n "."
+done
+echo ""
+echo "✅ rPictures est lancé."
+echo "ℹ️ Note: La synchronisation LDAP se fera après la création du premier utilisateur."
+
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 13: Installation de Ryvie rTransfer"
+echo "-----------------------------------------------------"
+
+# Aller dans le dossier de travail /data/apps
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
+
+# 1. Cloner le dépôt si pas déjà présent
+if [ -d "Ryvie-rTransfer" ]; then
+    echo "✅ Le dépôt Ryvie-rTransfer existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie-rTransfer..."
+    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git || { echo "❌ Échec du clonage"; exit 1; }
+fi
+
+# 2. Se placer dans le dossier Ryvie-rTransfer
+cd "Ryvie-rTransfer" || { echo "❌ Impossible d'accéder à Ryvie-rTransfer"; exit 1; }
+pwd
+
+# 3. Lancer rTransfer avec docker-compose.yml
+echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.yml..."
+sudo docker compose -f docker-compose.yml up -d
+
+# 4. Vérification du démarrage sur le port 3000
+echo "⏳ Attente du démarrage de rTransfer (port 3011)..."
+until curl -s http://localhost:3011 > /dev/null; do
+    sleep 2
+    echo -n "."
+done
+echo ""
+echo "✅ rTransfer est lancé et prêt avec l'authentification LDAP."
+
+
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 14: Installation de Ryvie rDrop"
+echo "-----------------------------------------------------"
+
+cd "$APPS_DIR"
+
+if [ -d "Ryvie-rdrop" ]; then
+    echo "✅ Le dépôt Ryvie-rdrop existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie-rdrop..."
+    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt Ryvie-rdrop."
+        exit 1
+    fi
+fi
+
+cd Ryvie-rdrop/rDrop-main
+
+echo "✅ Répertoire atteint : $(pwd)"
+
+if [ -f docker/openssl/create.sh ]; then
+    chmod +x docker/openssl/create.sh
+    echo "✅ Script create.sh rendu exécutable."
+else
+    echo "❌ Script docker/openssl/create.sh introuvable."
+    exit 1
+fi
+
+echo "📦 Suppression des conteneurs orphelins..."
+sudo docker compose down --remove-orphans
+sudo docker compose up -d
+
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 15: Installation et préparation de Rclone"
+echo "-----------------------------------------------------"
+
+# Installer/mettre à jour Rclone (méthode officielle)
+# (réexécutable sans risque : met à jour si déjà installé)
+curl -fsSL https://rclone.org/install.sh | sudo bash
+
+# Vérifie qu'il est bien là :
+# - essaie /usr/bin/rclone comme demandé
+# - sinon affiche l'emplacement réel retourné par command -v
+command -v rclone && ls -l /usr/bin/rclone || {
+  echo "ℹ️ rclone n'est pas sous /usr/bin, emplacement détecté :"
+  command -v rclone
+  ls -l "$(command -v rclone)" 2>/dev/null || true
+}
+
+# Version pour confirmation
+rclone version || true
+
+# Rclone – config centralisée sous /data/config/rclone
+mkdir -p "$CONFIG_DIR/rclone"
+touch "$CONFIG_DIR/rclone/rclone.conf"
+chmod 600 "$CONFIG_DIR/rclone/rclone.conf"
+sudo chown root:root "$CONFIG_DIR/rclone/rclone.conf" || true
+
+# Option pratique (host uniquement) : symlink facultatif pour compatibilité
+sudo mkdir -p /root/.config
+if [ ! -L /root/.config/rclone ]; then
+  sudo rm -rf /root/.config/rclone 2>/dev/null || true
+  sudo ln -s "$CONFIG_DIR/rclone" /root/.config/rclone
+fi
+
+# Export pour les sessions shell (host)
+export RCLONE_CONFIG="$CONFIG_DIR/rclone/rclone.conf"
+grep -q 'RCLONE_CONFIG=' /etc/profile.d/ryvie_rclone.sh 2>/dev/null || \
+  echo 'export RCLONE_CONFIG=/data/config/rclone/rclone.conf' | sudo tee /etc/profile.d/ryvie_rclone.sh >/dev/null
+
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 16: Installation et lancement de Ryvie rDrive (compose unique)"
+echo "-----------------------------------------------------"
+
+# Dossier rDrive
+RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
+
+# 1) Vérifier la présence du compose et du .env
+cd "$RDRIVE_DIR" || { echo "❌ Impossible d'accéder à $RDRIVE_DIR"; exit 1; }
+
+if [ ! -f docker-compose.yml ]; then
+  echo "❌ docker-compose.yml introuvable dans $RDRIVE_DIR"
+  echo "   Place le fichier docker-compose.yml ici puis relance."
+  exit 1
+fi
+
+# Le .env front/back est généré plus haut (NetBird → generate_env_file)
+if [ ! -f "$CONFIG_DIR/rdrive/.env" ]; then
+  echo "⚠️ /data/config/rdrive/.env introuvable — tentative de régénération…"
+  generate_env_file || {
+    echo "❌ Impossible de générer /data/config/rdrive/.env"
+    exit 1
+  }
+fi
+
+# (Optionnel) s'assurer que rclone est montable au bon chemin
+if ! [ -x /usr/bin/rclone ]; then
+  RBIN="$(command -v rclone || true)"
+  if [ -n "$RBIN" ]; then
+    sudo ln -sf "$RBIN" /usr/bin/rclone
+  fi
+fi
+
+# 2) Lancement unique
+echo "🚀 Démarrage de la stack rDrive…"
+sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" pull || true
+sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" up -d --build
+
+# 3) Attentes/health (best-effort)
+echo "⏳ Attente des services (mongo, onlyoffice, node, frontend)…"
+wait_for_service() {
+  local svc="$1"
+  local retries=60
+  while [ $retries -gt 0 ]; do
+    if sudo docker compose ps --format json | jq -e ".[] | select(.Service==\"$svc\") | .State==\"running\"" >/dev/null 2>&1; then
+      # si health est défini, essaye de lire
+      if sudo docker inspect --format='{{json .State.Health}}' "$(sudo docker compose ps -q "$svc")" 2>/dev/null | jq -e '.Status=="healthy"' >/dev/null 2>&1; then
+        echo "✅ $svc healthy"
+        return 0
+      fi
+      # sinon, running suffit
+      echo "✅ $svc en cours d'exécution"
+      return 0
+    fi
+    sleep 2
+    retries=$((retries-1))
+  done
+  echo "⚠️ Timeout d'attente pour $svc"
+  return 1
+}
+
+
+echo "✅ rDrive est lancé via docker-compose unique."
+echo "   Frontend accessible (par défaut) sur http://localhost:3010"
 
 echo ""
 echo "======================================================"
