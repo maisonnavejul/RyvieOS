@@ -1346,7 +1346,8 @@ sudo sed -i 's/^#\s*host-name=.*/host-name=ryvie/' /etc/avahi/avahi-daemon.conf 
 sudo systemctl restart avahi-daemon || true
 
 echo ""
-echo "Etape 12: Configuration d'OpenLDAP avec Docker Compose"
+echo "-----------------------------------------------------"
+echo "Étape 10: Configuration d'OpenLDAP avec Docker Compose"
 echo "-----------------------------------------------------"
 
 # 1. Créer le dossier ldap sous /data/config et s'y positionner
@@ -1492,7 +1493,154 @@ echo "✅ Configuration ACL pour le groupe admins appliquée."
  echo " ( à implémenter non mis car mdp dedans )"
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 10: Installation de Ryvie rPictures"
+echo "Étape 11: Installation et lancement du Ryvie-Back et Front-end"
+echo "-----------------------------------------------------"
+
+# S'assurer d'être dans le répertoire de travail
+cd "$RYVIE_ROOT" || { echo "❌ RYVIE_ROOT introuvable: $RYVIE_ROOT"; exit 1; }
+
+# Vérifier la présence du dépôt Ryvie
+if [ ! -d "Ryvie" ]; then
+    echo "❌ Le dépôt 'Ryvie' est introuvable dans $RYVIE_ROOT. Assurez-vous qu'il a été cloné plus haut."
+    exit 1
+fi
+
+# Aller dans le dossier Ryvie-Back
+cd "Ryvie/Ryvie-Back" || { echo "❌ Dossier 'Ryvie/Ryvie-Back' introuvable"; exit 1; }
+
+# Vérifier si .env existe, sinon le créer
+if [ ! -f ".env" ] && [ ! -L ".env" ]; then
+  echo "⚠️ Aucun .env trouvé. Création d'un fichier .env par défaut sous $CONFIG_DIR/backend-view et symlink local..."
+  mkdir -p "$CONFIG_DIR/backend-view"
+  cat > "$CONFIG_DIR/backend-view/.env" << 'EOL'
+PORT=3002
+REDIS_URL=redis://127.0.0.1:6379
+ENCRYPTION_KEY=cQO6ti5443SHwT0+ERK61fAkse/F33cTIfHqDfskOZE=
+JWT_ENCRYPTION_KEY=l6cjqwghDHw+kqqvBXcGVZt8ctCbQEnJ9mBXS1V7Kjs=
+JWT_SECRET=8d168c01d550434ad8332a9aaad9eae15344d4ad0f5f41f4dca28d5d9c26f3ec1d87c8e2ea2eb78e0bd2b38085dd9a11a2699db18751199052f94a2ea14568fd
+# Configuration LDAP
+LDAP_URL=ldap://localhost:389
+LDAP_BIND_DN=cn=read-only,ou=users,dc=example,dc=org
+LDAP_BIND_PASSWORD=readpassword
+LDAP_USER_SEARCH_BASE=ou=users,dc=example,dc=org
+LDAP_GROUP_SEARCH_BASE=ou=users,dc=example,dc=org
+LDAP_ADMIN_GROUP=cn=admins,ou=users,dc=example,dc=org
+LDAP_USER_GROUP=cn=users,ou=users,dc=example,dc=org
+LDAP_GUEST_GROUP=cn=guests,ou=users,dc=example,dc=org
+
+# Security Configuration
+DEFAULT_EMAIL_DOMAIN=example.org
+AUTH_RATE_LIMIT_WINDOW_MS=900000
+AUTH_RATE_LIMIT_MAX_ATTEMPTS=5
+API_RATE_LIMIT_WINDOW_MS=900000
+API_RATE_LIMIT_MAX_REQUESTS=100
+BRUTE_FORCE_MAX_ATTEMPTS=5
+BRUTE_FORCE_BLOCK_DURATION_MS=900000
+ENABLE_SECURITY_LOGGING=true
+LOG_FAILED_ATTEMPTS=true
+
+# Session Security
+SESSION_TIMEOUT_MS=3600000
+MAX_CONCURRENT_SESSIONS=3
+
+# Production Security (set to true for production)
+FORCE_HTTPS=false
+ENABLE_HELMET=true
+ENABLE_CORS_CREDENTIALS=false
+EOL
+  # Créer un symlink local .env vers /data/config pour compatibilité
+  ln -sf "$CONFIG_DIR/backend-view/.env" .env
+  echo "✅ Fichier .env par défaut créé et lié: $CONFIG_DIR/backend-view/.env -> $(pwd)/.env"
+fi
+
+# Installer PM2 globalement si ce n'est pas déjà fait
+if ! command -v pm2 &> /dev/null; then
+    echo "📦 Installation de PM2..."
+    sudo npm install -g pm2 || { echo "❌ Échec de l'installation de PM2"; exit 1; }
+    # Configurer PM2 pour le démarrage automatique
+    sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
+fi
+
+# Installer les dépendances
+echo "📦 Installation des dépendances (npm install)"
+sudo -u "$EXEC_USER" npm install || { echo "❌ npm install a échoué"; exit 1; }
+
+# Compiler le projet TypeScript
+echo "🔨 Compilation du projet TypeScript..."
+sudo -u "$EXEC_USER" npm run build || { echo "❌ La compilation TypeScript a échoué"; exit 1; }
+
+# Vérifier que le fichier compilé existe
+if [ ! -f "dist/index.js" ]; then
+    echo "❌ Le fichier dist/index.js n'existe pas après la compilation"
+    exit 1
+fi
+
+# Démarrer ou redémarrer le service avec PM2
+echo "🚀 Démarrage du Ryvie-Back avec PM2..."
+if sudo -u "$EXEC_USER" pm2 describe backend-view > /dev/null 2>&1; then
+    echo "🔄 Redémarrage du service backend-view existant..."
+    sudo -u "$EXEC_USER" pm2 restart backend-view --update-env
+else
+    echo "✨ Création d'un nouveau service PM2 pour backend-view..."
+    sudo -u "$EXEC_USER" pm2 start dist/index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
+fi
+
+# Sauvegarder la configuration PM2
+sudo -u "$EXEC_USER" pm2 save
+
+# Configurer PM2 pour le démarrage automatique
+sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
+
+echo "✅ Ryvie-Back est géré par PM2 (TypeScript compilé)"
+echo "📝 Logs d'accès: $LOG_DIR/backend-view-out.log"
+echo "📝 Logs d'erreur: $LOG_DIR/backend-error.log"
+echo "ℹ️ Commandes utiles:"
+echo "   - Voir les logs: pm2 logs backend-view"
+echo "   - Arrêter: pm2 stop backend-view"
+echo "   - Redémarrer: pm2 restart backend-view"
+echo "   - Recompiler et redémarrer: cd $RYVIE_ROOT/Ryvie/Ryvie-Back && npm run build && pm2 restart backend-view"
+echo "   - Arrêter tout: pm2 stop all"
+echo "   - Statut: pm2 status"
+
+# Frontend setup
+echo "🚀 Setting up frontend..."
+cd "$RYVIE_ROOT/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
+
+# S'assurer que l'utilisateur a les permissions sur le répertoire frontend
+echo "🔒 Configuration des permissions du frontend..."
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/Ryvie/Ryvie-Front"
+sudo chmod -R u+rwX "$RYVIE_ROOT/Ryvie/Ryvie-Front"
+
+echo "📦 Installing frontend dependencies..."
+sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
+
+echo "🚀 Starting frontend with PM2..."
+if sudo -u "$EXEC_USER" pm2 describe ryvie-frontend > /dev/null 2>&1; then
+    echo "🔄 Restarting existing ryvie-frontend service..."
+    sudo -u "$EXEC_USER" pm2 restart ryvie-frontend --update-env
+else
+    echo "✨ Creating new PM2 service for ryvie-frontend..."
+    sudo -u "$EXEC_USER" pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
+fi
+
+# Save PM2 configuration
+sudo -u "$EXEC_USER" pm2 save
+
+echo "✅ Installation et démarrage terminés!"
+echo "📊 Vérifier le statut: pm2 status"
+
+echo "✅ Frontend is now managed by PM2"
+echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
+echo "ℹ️ Useful commands:"
+echo "   - View logs: pm2 logs ryvie-frontend"
+echo "   - Stop: pm2 stop ryvie-frontend"
+echo "   - Restart: pm2 restart ryvie-frontend"
+echo "   - Stop everything: pm2 stop all"
+echo "   - Status: pm2 status"
+
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 12: Installation de Ryvie rPictures"
 echo "-----------------------------------------------------"
 # 1. Se placer dans le dossier des applications (APPS_DIR défini en haut)
 echo "📁 Dossier sélectionné : $APPS_DIR"
@@ -1531,7 +1679,7 @@ DB_DATA_LOCATION=./postgres
 IMMICH_VERSION=v2
 
 # Connection secret for postgres. You should change it to a random password
-# Please use only the characters `A-Za-z0-9`, without special characters or spaces
+# Please use only the characters \`A-Za-z0-9\`, without special characters or spaces
 DB_PASSWORD=postgres
 
 # The values below this line do not need to be changed
@@ -1569,7 +1717,7 @@ echo "ℹ️ Note: La synchronisation LDAP se fera après la création du premie
 
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 11: Installation de Ryvie rTransfer"
+echo "Étape 13: Installation de Ryvie rTransfer"
 echo "-----------------------------------------------------"
 
 # Aller dans le dossier de travail /data/apps
@@ -1598,13 +1746,12 @@ until curl -s http://localhost:3011 > /dev/null; do
     echo -n "."
 done
 echo ""
-echo "✅ rTransfer est lancé et prêt avec l’authentification LDAP."
+echo "✅ rTransfer est lancé et prêt avec l'authentification LDAP."
 
 
 echo ""
 echo "-----------------------------------------------------"
-echo "-----------------------------------------------------"
-echo "Étape 12: Installation de Ryvie rDrop"
+echo "Étape 14: Installation de Ryvie rDrop"
 echo "-----------------------------------------------------"
 
 cd "$APPS_DIR"
@@ -1638,16 +1785,16 @@ sudo docker compose up -d
 
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 13: Installation et préparation de Rclone"
+echo "Étape 15: Installation et préparation de Rclone"
 echo "-----------------------------------------------------"
 
 # Installer/mettre à jour Rclone (méthode officielle)
 # (réexécutable sans risque : met à jour si déjà installé)
 curl -fsSL https://rclone.org/install.sh | sudo bash
 
-# Vérifie qu’il est bien là :
+# Vérifie qu'il est bien là :
 # - essaie /usr/bin/rclone comme demandé
-# - sinon affiche l’emplacement réel retourné par command -v
+# - sinon affiche l'emplacement réel retourné par command -v
 command -v rclone && ls -l /usr/bin/rclone || {
   echo "ℹ️ rclone n'est pas sous /usr/bin, emplacement détecté :"
   command -v rclone
@@ -1677,7 +1824,7 @@ grep -q 'RCLONE_CONFIG=' /etc/profile.d/ryvie_rclone.sh 2>/dev/null || \
 
 echo ""
 echo "-----------------------------------------------------"
-echo "Étape 14: Installation et lancement de Ryvie rDrive (compose unique)"
+echo "Étape 16: Installation et lancement de Ryvie rDrive (compose unique)"
 echo "-----------------------------------------------------"
 
 # Dossier rDrive
@@ -1733,145 +1880,13 @@ wait_for_service() {
     sleep 2
     retries=$((retries-1))
   done
-  echo "⚠️ Timeout d’attente pour $svc"
+  echo "⚠️ Timeout d'attente pour $svc"
   return 1
 }
 
 
 echo "✅ rDrive est lancé via docker-compose unique."
 echo "   Frontend accessible (par défaut) sur http://localhost:3010"
-
-
-echo "-----------------------------------------------------"
-echo "Étape 15: Installation et lancement du Back-end-view et Front-end"
-echo "-----------------------------------------------------"
-
-# S'assurer d'être dans le répertoire de travail
-cd "$RYVIE_ROOT" || { echo "❌ RYVIE_ROOT introuvable: $RYVIE_ROOT"; exit 1; }
-
-# Vérifier la présence du dépôt Ryvie
-if [ ! -d "Ryvie" ]; then
-    echo "❌ Le dépôt 'Ryvie' est introuvable dans $RYVIE_ROOT. Assurez-vous qu'il a été cloné plus haut."
-    exit 1
-fi
-
-# Aller dans le dossier Back-end-view
-cd "Ryvie/Back-end-view" || { echo "❌ Dossier 'Ryvie/Back-end-view' introuvable"; exit 1; }
-
-
-  echo "⚠️ Aucun .env trouvé. Création d'un fichier .env par défaut sous $CONFIG_DIR/backend-view et symlink local..."
-  mkdir -p "$CONFIG_DIR/backend-view"
-  cat > "$CONFIG_DIR/backend-view/.env" << 'EOL'
-PORT=3002
-REDIS_URL=redis://127.0.0.1:6379
-ENCRYPTION_KEY=cQO6ti5443SHwT0+ERK61fAkse/F33cTIfHqDfskOZE=
-JWT_ENCRYPTION_KEY=l6cjqwghDHw+kqqvBXcGVZt8ctCbQEnJ9mBXS1V7Kjs=
-JWT_SECRET=8d168c01d550434ad8332a9aaad9eae15344d4ad0f5f41f4dca28d5d9c26f3ec1d87c8e2ea2eb78e0bd2b38085dd9a11a2699db18751199052f94a2ea14568fd
-# Configuration LDAP
-LDAP_URL=ldap://localhost:389
-LDAP_BIND_DN=cn=read-only,ou=users,dc=example,dc=org
-LDAP_BIND_PASSWORD=readpassword
-LDAP_USER_SEARCH_BASE=ou=users,dc=example,dc=org
-LDAP_GROUP_SEARCH_BASE=ou=users,dc=example,dc=org
-LDAP_ADMIN_GROUP=cn=admins,ou=users,dc=example,dc=org
-LDAP_USER_GROUP=cn=users,ou=users,dc=example,dc=org
-LDAP_GUEST_GROUP=cn=guests,ou=users,dc=example,dc=org
-
-# Security Configuration
-DEFAULT_EMAIL_DOMAIN=example.org
-AUTH_RATE_LIMIT_WINDOW_MS=900000
-AUTH_RATE_LIMIT_MAX_ATTEMPTS=5
-API_RATE_LIMIT_WINDOW_MS=900000
-API_RATE_LIMIT_MAX_REQUESTS=100
-BRUTE_FORCE_MAX_ATTEMPTS=5
-BRUTE_FORCE_BLOCK_DURATION_MS=900000
-ENABLE_SECURITY_LOGGING=true
-LOG_FAILED_ATTEMPTS=true
-
-# Session Security
-SESSION_TIMEOUT_MS=3600000
-MAX_CONCURRENT_SESSIONS=3
-
-# Production Security (set to true for production)
-FORCE_HTTPS=false
-ENABLE_HELMET=true
-ENABLE_CORS_CREDENTIALS=false
-EOL
-  # Créer un symlink local .env vers /data/config pour compatibilité
-  ln -sf "$CONFIG_DIR/backend-view/.env" .env
-  echo "✅ Fichier .env par défaut créé et lié: $CONFIG_DIR/backend-view/.env -> $(pwd)/.env"
-
-# Installer PM2 globalement si ce n'est pas déjà fait
-if ! command -v pm2 &> /dev/null; then
-    echo "📦 Installation de PM2..."
-    sudo npm install -g pm2 || { echo "❌ Échec de l'installation de PM2"; exit 1; }
-    # Configurer PM2 pour le démarrage automatique
-    sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
-fi
-
-# Installer les dépendances
-echo "📦 Installation des dépendances (npm install)"
-sudo -u "$EXEC_USER" npm install || { echo "❌ npm install a échoué"; exit 1; }
-
-
-# Démarrer ou redémarrer le service avec PM2
-echo "🚀 Démarrage du Back-end-view avec PM2..."
-if sudo -u "$EXEC_USER" pm2 describe backend-view > /dev/null 2>&1; then
-    echo "🔄 Redémarrage du service backend-view existant..."
-    sudo -u "$EXEC_USER" pm2 restart backend-view --update-env
-else
-    echo "✨ Création d'un nouveau service PM2 pour backend-view..."
-    sudo -u "$EXEC_USER" pm2 start index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
-fi
-
-# Sauvegarder la configuration PM2
-sudo -u "$EXEC_USER" pm2 save
-
-# Configurer PM2 pour le démarrage automatique
-sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
-
-echo "✅ Back-end-view est géré par PM2"
-echo "📝 Logs d'accès: $LOG_DIR/backend-view-out.log"
-echo "📝 Logs d'erreur: $LOG_DIR/backend-error.log"
-echo "ℹ️ Commandes utiles:"
-echo "   - Voir les logs: pm2 logs backend-view"
-echo "   - Arrêter: pm2 stop backend-view"
-echo "   - Redémarrer: pm2 restart backend-view"
-echo "   - Arrêter tout: pm2 stop all"
-echo "   - Statut: pm2 status"
-
-# Frontend setup
-echo "🚀 Setting up frontend..."
-cd "$RYVIE_ROOT/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
-
-# S'assurer que l'utilisateur a les permissions sur le répertoire frontend
-echo "🔒 Configuration des permissions du frontend..."
-sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/Ryvie/Ryvie-Front"
-sudo chmod -R u+rwX "$RYVIE_ROOT/Ryvie/Ryvie-Front"
-
-echo "📦 Installing frontend dependencies..."
-sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
-
-echo "🚀 Starting frontend with PM2..."
-if sudo -u "$EXEC_USER" pm2 describe ryvie-frontend > /dev/null 2>&1; then
-    echo "🔄 Restarting existing ryvie-frontend service..."
-    sudo -u "$EXEC_USER" pm2 restart ryvie-frontend --update-env
-else
-    echo "✨ Creating new PM2 service for ryvie-frontend..."
-    sudo -u "$EXEC_USER" pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
-fi
-
-# Save PM2 configuration
-sudo -u "$EXEC_USER" pm2 save
-
-echo "✅ Frontend is now managed by PM2"
-echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
-echo "ℹ️ Useful commands:"
-echo "   - View logs: pm2 logs ryvie-frontend"
-echo "   - Stop: pm2 stop ryvie-frontend"
-echo "   - Restart: pm2 restart ryvie-frontend"
-echo "   - Stop everything: pm2 stop all"
-echo "   - Status: pm2 status"
 
 echo ""
 echo "======================================================"
@@ -1895,7 +1910,7 @@ echo "✅ Installation Ryvie OS terminée !"
 echo "======================================================"
 echo ""
 echo "📍 Architecture créée :"
-echo "   /opt/Ryvie/               → Application principale (Back-end-view, Front-end)"
+echo "   /opt/Ryvie/               → Application principale (Ryvie-Back, Ryvie-Front)"
 echo "   /data/apps/               → Applications Ryvie (rPictures, rDrive, rdrop, rTransfer)"
 echo "   /data/apps/portainer/     → Données Portainer"
 echo "   /data/config/ldap/        → Configuration OpenLDAP"
