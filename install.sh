@@ -1492,6 +1492,7 @@ echo "✅ Configuration ACL pour le groupe admins appliquée."
 
  echo " ( à implémenter non mis car mdp dedans )"
 echo ""
+echo ""
 echo "-----------------------------------------------------"
 echo "Étape 11: Installation et lancement du Ryvie-Back et Front-end"
 echo "-----------------------------------------------------"
@@ -1557,53 +1558,14 @@ fi
 if ! command -v pm2 &> /dev/null; then
     echo "📦 Installation de PM2..."
     sudo npm install -g pm2 || { echo "❌ Échec de l'installation de PM2"; exit 1; }
-    # Configurer PM2 pour le démarrage automatique
-    sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
 fi
 
-# Installer les dépendances
-echo "📦 Installation des dépendances (npm install)"
+# Installer les dépendances backend
+echo "📦 Installation des dépendances backend (npm install)"
 sudo -u "$EXEC_USER" npm install || { echo "❌ npm install a échoué"; exit 1; }
 
-# Compiler le projet TypeScript
-echo "🔨 Compilation du projet TypeScript..."
-sudo -u "$EXEC_USER" npm run build || { echo "❌ La compilation TypeScript a échoué"; exit 1; }
-
-# Vérifier que le fichier compilé existe
-if [ ! -f "dist/index.js" ]; then
-    echo "❌ Le fichier dist/index.js n'existe pas après la compilation"
-    exit 1
-fi
-
-# Démarrer ou redémarrer le service avec PM2
-echo "🚀 Démarrage du Ryvie-Back avec PM2..."
-if sudo -u "$EXEC_USER" pm2 describe backend-view > /dev/null 2>&1; then
-    echo "🔄 Redémarrage du service backend-view existant..."
-    sudo -u "$EXEC_USER" pm2 restart backend-view --update-env
-else
-    echo "✨ Création d'un nouveau service PM2 pour backend-view..."
-    sudo -u "$EXEC_USER" pm2 start dist/index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
-fi
-
-# Sauvegarder la configuration PM2
-sudo -u "$EXEC_USER" pm2 save
-
-# Configurer PM2 pour le démarrage automatique
-sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
-
-echo "✅ Ryvie-Back est géré par PM2 (TypeScript compilé)"
-echo "📝 Logs d'accès: $LOG_DIR/backend-view-out.log"
-echo "📝 Logs d'erreur: $LOG_DIR/backend-error.log"
-echo "ℹ️ Commandes utiles:"
-echo "   - Voir les logs: pm2 logs backend-view"
-echo "   - Arrêter: pm2 stop backend-view"
-echo "   - Redémarrer: pm2 restart backend-view"
-echo "   - Recompiler et redémarrer: cd $RYVIE_ROOT/Ryvie/Ryvie-Back && npm run build && pm2 restart backend-view"
-echo "   - Arrêter tout: pm2 stop all"
-echo "   - Statut: pm2 status"
-
 # Frontend setup
-echo "🚀 Setting up frontend..."
+echo "🚀 Configuration du frontend..."
 cd "$RYVIE_ROOT/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
 
 # S'assurer que l'utilisateur a les permissions sur le répertoire frontend
@@ -1611,34 +1573,44 @@ echo "🔒 Configuration des permissions du frontend..."
 sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/Ryvie/Ryvie-Front"
 sudo chmod -R u+rwX "$RYVIE_ROOT/Ryvie/Ryvie-Front"
 
-echo "📦 Installing frontend dependencies..."
+echo "📦 Installation des dépendances frontend..."
 sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
 
-echo "🚀 Starting frontend with PM2..."
-if sudo -u "$EXEC_USER" pm2 describe ryvie-frontend > /dev/null 2>&1; then
-    echo "🔄 Restarting existing ryvie-frontend service..."
-    sudo -u "$EXEC_USER" pm2 restart ryvie-frontend --update-env
-else
-    echo "✨ Creating new PM2 service for ryvie-frontend..."
-    sudo -u "$EXEC_USER" pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
-fi
+# Installer serve pour la production
+echo "📦 Installation de serve pour le mode production..."
+sudo -u "$EXEC_USER" npm install --save-dev serve || { echo "❌ Installation de serve échouée"; exit 1; }
 
-# Save PM2 configuration
+# Lancer le script de production
+echo "🚀 Lancement de Ryvie en mode PRODUCTION..."
+cd "$RYVIE_ROOT/Ryvie" || { echo "❌ Impossible d'accéder à $RYVIE_ROOT/Ryvie"; exit 1; }
+
+# Rendre les scripts exécutables
+chmod +x scripts/*.sh
+
+# Lancer le script prod.sh
+sudo -u "$EXEC_USER" bash scripts/prod.sh || { echo "❌ Échec du lancement en mode production"; exit 1; }
+
+# Configurer PM2 pour le démarrage automatique
+sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
 sudo -u "$EXEC_USER" pm2 save
 
 echo "✅ Installation et démarrage terminés!"
-echo "📊 Vérifier le statut: pm2 status"
-
-echo "✅ Frontend is now managed by PM2"
-echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
-echo "ℹ️ Useful commands:"
-echo "   - View logs: pm2 logs ryvie-frontend"
-echo "   - Stop: pm2 stop ryvie-frontend"
-echo "   - Restart: pm2 restart ryvie-frontend"
-echo "   - Stop everything: pm2 stop all"
-echo "   - Status: pm2 status"
-
 echo ""
+echo "📊 Services lancés en mode PRODUCTION:"
+echo "   - Backend:  http://localhost:3002 (Node.js compilé)"
+echo "   - Frontend: http://localhost:3000 (serve statique)"
+echo ""
+echo "📝 Logs:"
+echo "   - Backend:  $LOG_DIR/backend-prod-*.log"
+echo "   - Frontend: $LOG_DIR/frontend-prod-*.log"
+echo ""
+echo "ℹ️ Commandes utiles:"
+echo "   - Voir les logs: pm2 logs"
+echo "   - Rebuilder: $RYVIE_ROOT/Ryvie/scripts/rebuild-prod.sh"
+echo "   - Arrêter tout: pm2 stop all"
+echo "   - Statut: pm2 status"
+echo ""
+echo "💡 Consommation en mode PRODUCTION: ~200MB RAM"
 echo "-----------------------------------------------------"
 echo "Étape 12: Installation de Ryvie rPictures"
 echo "-----------------------------------------------------"
