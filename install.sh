@@ -627,6 +627,24 @@ repair_docker_volumes() {
 
 strict_exit
 
+echo ""
+echo "----------------------------------------------------"
+echo "Pré-configuration: Génération du mot de passe LDAP"
+echo "----------------------------------------------------"
+
+# Générer le mot de passe LDAP en premier (nécessaire pour tous les .env)
+LDAP_DIR="$CONFIG_DIR/ldap"
+mkdir -p "$LDAP_DIR"
+echo "🔐 Génération d'un mot de passe aléatoire pour l'admin LDAP..."
+LDAP_ADMIN_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-20)
+
+# Stocker le mot de passe dans /data/config/ldap/.env
+cat > "$LDAP_DIR/.env" <<EOF
+LDAP_ADMIN_PASSWORD=$LDAP_ADMIN_PASSWORD
+EOF
+chmod 600 "$LDAP_DIR/.env"
+chown "$EXEC_USER:$EXEC_USER" "$LDAP_DIR/.env" 2>/dev/null || true
+echo "✅ Mot de passe admin LDAP généré et stocké dans $LDAP_DIR/.env"
 
 echo ""
 echo "----------------------------------------------------"
@@ -1125,6 +1143,13 @@ EOF
         local netbird_ip
         netbird_ip=$(get_netbird_ip)
         
+        # Charger le mot de passe LDAP depuis le fichier .env
+        local ldap_admin_password=""
+        if [ -f "$CONFIG_DIR/ldap/.env" ]; then
+            source "$CONFIG_DIR/ldap/.env"
+            ldap_admin_password="$LDAP_ADMIN_PASSWORD"
+        fi
+        
         # Générer le fichier .env dans /data/config/rdrive
         cat > "$rdrive_env" << EOF
 REACT_APP_FRONTEND_URL=http://$netbird_ip:3010
@@ -1132,6 +1157,7 @@ REACT_APP_BACKEND_URL=http://$netbird_ip:4000
 REACT_APP_WEBSOCKET_URL=ws://$netbird_ip:4000/ws
 REACT_APP_ONLYOFFICE_CONNECTOR_URL=http://$netbird_ip:5000
 REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://$netbird_ip:8090
+LDAP_BIND_PASSWORD=$ldap_admin_password
 EOF
         
         log_info "✅ .env rDrive généré → $rdrive_env"
@@ -1355,8 +1381,8 @@ LDAP_DIR="$CONFIG_DIR/ldap"
 mkdir -p "$LDAP_DIR"
 cd "$LDAP_DIR"
 
-# 2. Créer le fichier docker-compose.yml pour lancer OpenLDAP
-cat <<'EOF' > docker-compose.yml
+# 2. Créer le fichier docker-compose.yml pour lancer OpenLDAP avec le mot de passe généré
+cat > docker-compose.yml <<EOF
 version: '3.8'
 
 services:
@@ -1364,9 +1390,9 @@ services:
     image: julescloud/ryvieldap:latest
     container_name: openldap
     environment:
-      - LDAP_ADMIN_USERNAME=admin           # Nom d'utilisateur admin LDAP
-      - LDAP_ADMIN_PASSWORD=adminpassword   # Mot de passe admin
-      - LDAP_ROOT=dc=example,dc=org         # Domaine racine de l'annuaire
+      - LDAP_ADMIN_USERNAME=admin
+      - LDAP_ADMIN_PASSWORD=$LDAP_ADMIN_PASSWORD
+      - LDAP_ROOT=dc=example,dc=org
     ports:
       - "389:1389"  # Port LDAP
       - "636:1636"  # Port LDAP sécurisé
@@ -1391,8 +1417,8 @@ EOF
 sudo docker compose up -d
 
 # 4. Attendre que le conteneur soit prêt
-echo "Attente de la disponibilité du service OpenLDAP..."
-until ldapsearch -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -b "dc=example,dc=org" >/dev/null 2>&1; do
+echo "⏳ Attente de la disponibilité du service OpenLDAP..."
+until ldapsearch -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w "$LDAP_ADMIN_PASSWORD" -b "dc=example,dc=org" >/dev/null 2>&1; do
     sleep 2
     echo -n "."
 done
@@ -1411,10 +1437,12 @@ dn: cn=readers,ou=groups,dc=example,dc=org
 changetype: delete
 EOF
 
-ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f delete-entries.ldif
+ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w "$LDAP_ADMIN_PASSWORD" -f delete-entries.ldif
 
-# Note: La création des utilisateurs et groupes se fera après l'inscription de l'utilisateur
-# 8. Créer les groupes via add-groups.ldif
+# Nettoyer le fichier temporaire
+rm -f delete-entries.ldif
+
+# 6. Créer les groupes via add-groups.ldif
 cat <<'EOF' > add-groups.ldif
 # Groupe admins
 dn: cn=admins,ou=users,dc=example,dc=org
@@ -1422,7 +1450,10 @@ objectClass: groupOfNames
 cn: admins
 EOF
 
-ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f add-groups.ldif
+ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w "$LDAP_ADMIN_PASSWORD" -f add-groups.ldif
+
+# Nettoyer le fichier temporaire
+rm -f add-groups.ldif
 
 # ==================================================================
 # Partie ACL : Configuration de l'accès read-only et des droits admins
@@ -1456,13 +1487,19 @@ userPassword: readpassword
 EOF
 
 echo "Ajout de l'utilisateur read-only..."
-ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w adminpassword -f read-only-user.ldif
+ldapadd -x -H ldap://localhost:389 -D "cn=admin,dc=example,dc=org" -w "$LDAP_ADMIN_PASSWORD" -f read-only-user.ldif
+
+# Nettoyer le fichier temporaire
+rm -f read-only-user.ldif
 
 echo "Copie du fichier ACL read-only dans le conteneur OpenLDAP..."
 sudo docker cp acl-read-only.ldif openldap:/tmp/acl-read-only.ldif
 
 echo "Application de la configuration ACL read-only..."
 sudo docker exec -it openldap ldapmodify -Y EXTERNAL -H ldapi:/// -f /tmp/acl-read-only.ldif
+
+# Nettoyer le fichier temporaire
+rm -f acl-read-only.ldif
 
 echo "Test de l'accès en lecture seule avec l'utilisateur read-only..."
 ldapsearch -x -D "cn=read-only,ou=users,dc=example,dc=org" -w readpassword -b "ou=users,dc=example,dc=org" "(objectClass=*)"
@@ -1488,9 +1525,14 @@ sudo docker cp acl-admin-write.ldif openldap:/tmp/acl-admin-write.ldif
 echo "Application de la configuration ACL (droits d'écriture pour le groupe admins)..."
 sudo docker exec -it openldap ldapmodify -Y EXTERNAL -H ldapi:/// -f /tmp/acl-admin-write.ldif
 
+# Nettoyer le fichier temporaire
+rm -f acl-admin-write.ldif
+
 echo "✅ Configuration ACL pour le groupe admins appliquée."
+echo "🧹 Fichiers LDIF temporaires supprimés."
 
  echo " ( à implémenter non mis car mdp dedans )"
+echo ""
 echo ""
 echo "-----------------------------------------------------"
 echo "Étape 11: Installation et lancement du Ryvie-Back et Front-end"
@@ -1512,12 +1554,27 @@ cd "Ryvie/Ryvie-Back" || { echo "❌ Dossier 'Ryvie/Ryvie-Back' introuvable"; ex
 if [ ! -f ".env" ] && [ ! -L ".env" ]; then
   echo "⚠️ Aucun .env trouvé. Création d'un fichier .env par défaut sous $CONFIG_DIR/backend-view et symlink local..."
   mkdir -p "$CONFIG_DIR/backend-view"
-  cat > "$CONFIG_DIR/backend-view/.env" << 'EOL'
+  
+  # Charger le mot de passe LDAP depuis le fichier .env
+  if [ -f "$CONFIG_DIR/ldap/.env" ]; then
+    source "$CONFIG_DIR/ldap/.env"
+  else
+    echo "❌ Fichier $CONFIG_DIR/ldap/.env introuvable"
+    exit 1
+  fi
+  
+  # Générer les clés de sécurité aléatoires
+  echo "🔐 Génération des clés de sécurité pour le backend..."
+  ENCRYPTION_KEY=$(openssl rand -base64 32)
+  JWT_ENCRYPTION_KEY=$(openssl rand -base64 32)
+  JWT_SECRET=$(openssl rand -hex 64)
+  
+  cat > "$CONFIG_DIR/backend-view/.env" <<EOL
 PORT=3002
 REDIS_URL=redis://127.0.0.1:6379
-ENCRYPTION_KEY=cQO6ti5443SHwT0+ERK61fAkse/F33cTIfHqDfskOZE=
-JWT_ENCRYPTION_KEY=l6cjqwghDHw+kqqvBXcGVZt8ctCbQEnJ9mBXS1V7Kjs=
-JWT_SECRET=8d168c01d550434ad8332a9aaad9eae15344d4ad0f5f41f4dca28d5d9c26f3ec1d87c8e2ea2eb78e0bd2b38085dd9a11a2699db18751199052f94a2ea14568fd
+ENCRYPTION_KEY=$ENCRYPTION_KEY
+JWT_ENCRYPTION_KEY=$JWT_ENCRYPTION_KEY
+JWT_SECRET=$JWT_SECRET
 # Configuration LDAP
 LDAP_URL=ldap://localhost:389
 LDAP_BIND_DN=cn=read-only,ou=users,dc=example,dc=org
@@ -1547,6 +1604,10 @@ MAX_CONCURRENT_SESSIONS=3
 FORCE_HTTPS=false
 ENABLE_HELMET=true
 ENABLE_CORS_CREDENTIALS=false
+
+# Configuration LDAP Admin (mot de passe généré automatiquement)
+LDAP_ADMIN_BIND_DN=cn=admin,dc=example,dc=org
+LDAP_ADMIN_BIND_PASSWORD=$LDAP_ADMIN_PASSWORD
 EOL
   # Créer un symlink local .env vers /data/config pour compatibilité
   ln -sf "$CONFIG_DIR/backend-view/.env" .env
@@ -1557,53 +1618,14 @@ fi
 if ! command -v pm2 &> /dev/null; then
     echo "📦 Installation de PM2..."
     sudo npm install -g pm2 || { echo "❌ Échec de l'installation de PM2"; exit 1; }
-    # Configurer PM2 pour le démarrage automatique
-    sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
 fi
 
-# Installer les dépendances
-echo "📦 Installation des dépendances (npm install)"
+# Installer les dépendances backend
+echo "📦 Installation des dépendances backend (npm install)"
 sudo -u "$EXEC_USER" npm install || { echo "❌ npm install a échoué"; exit 1; }
 
-# Compiler le projet TypeScript
-echo "🔨 Compilation du projet TypeScript..."
-sudo -u "$EXEC_USER" npm run build || { echo "❌ La compilation TypeScript a échoué"; exit 1; }
-
-# Vérifier que le fichier compilé existe
-if [ ! -f "dist/index.js" ]; then
-    echo "❌ Le fichier dist/index.js n'existe pas après la compilation"
-    exit 1
-fi
-
-# Démarrer ou redémarrer le service avec PM2
-echo "🚀 Démarrage du Ryvie-Back avec PM2..."
-if sudo -u "$EXEC_USER" pm2 describe backend-view > /dev/null 2>&1; then
-    echo "🔄 Redémarrage du service backend-view existant..."
-    sudo -u "$EXEC_USER" pm2 restart backend-view --update-env
-else
-    echo "✨ Création d'un nouveau service PM2 pour backend-view..."
-    sudo -u "$EXEC_USER" pm2 start dist/index.js --name "backend-view" --output "$LOG_DIR/backend-view-out.log" --error "$LOG_DIR/backend-error.log" --time
-fi
-
-# Sauvegarder la configuration PM2
-sudo -u "$EXEC_USER" pm2 save
-
-# Configurer PM2 pour le démarrage automatique
-sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
-
-echo "✅ Ryvie-Back est géré par PM2 (TypeScript compilé)"
-echo "📝 Logs d'accès: $LOG_DIR/backend-view-out.log"
-echo "📝 Logs d'erreur: $LOG_DIR/backend-error.log"
-echo "ℹ️ Commandes utiles:"
-echo "   - Voir les logs: pm2 logs backend-view"
-echo "   - Arrêter: pm2 stop backend-view"
-echo "   - Redémarrer: pm2 restart backend-view"
-echo "   - Recompiler et redémarrer: cd $RYVIE_ROOT/Ryvie/Ryvie-Back && npm run build && pm2 restart backend-view"
-echo "   - Arrêter tout: pm2 stop all"
-echo "   - Statut: pm2 status"
-
 # Frontend setup
-echo "🚀 Setting up frontend..."
+echo "🚀 Configuration du frontend..."
 cd "$RYVIE_ROOT/Ryvie/Ryvie-Front" || { echo "❌ Failed to navigate to frontend directory"; exit 1; }
 
 # S'assurer que l'utilisateur a les permissions sur le répertoire frontend
@@ -1611,34 +1633,44 @@ echo "🔒 Configuration des permissions du frontend..."
 sudo chown -R "$EXEC_USER:$EXEC_USER" "$RYVIE_ROOT/Ryvie/Ryvie-Front"
 sudo chmod -R u+rwX "$RYVIE_ROOT/Ryvie/Ryvie-Front"
 
-echo "📦 Installing frontend dependencies..."
+echo "📦 Installation des dépendances frontend..."
 sudo -u "$EXEC_USER" npm install || { echo "❌ npm install failed"; exit 1; }
 
-echo "🚀 Starting frontend with PM2..."
-if sudo -u "$EXEC_USER" pm2 describe ryvie-frontend > /dev/null 2>&1; then
-    echo "🔄 Restarting existing ryvie-frontend service..."
-    sudo -u "$EXEC_USER" pm2 restart ryvie-frontend --update-env
-else
-    echo "✨ Creating new PM2 service for ryvie-frontend..."
-    sudo -u "$EXEC_USER" pm2 start "npm run dev" --name "ryvie-frontend" --output "$LOG_DIR/ryvie-frontend-out.log" --error "$LOG_DIR/ryvie-frontend-error.log" --time
-fi
+# Installer serve pour la production
+echo "📦 Installation de serve pour le mode production..."
+sudo -u "$EXEC_USER" npm install --save-dev serve || { echo "❌ Installation de serve échouée"; exit 1; }
 
-# Save PM2 configuration
+# Lancer le script de production
+echo "🚀 Lancement de Ryvie en mode PRODUCTION..."
+cd "$RYVIE_ROOT/Ryvie" || { echo "❌ Impossible d'accéder à $RYVIE_ROOT/Ryvie"; exit 1; }
+
+# Rendre les scripts exécutables
+chmod +x scripts/*.sh
+
+# Lancer le script prod.sh
+sudo -u "$EXEC_USER" bash scripts/prod.sh || { echo "❌ Échec du lancement en mode production"; exit 1; }
+
+# Configurer PM2 pour le démarrage automatique
+sudo pm2 startup systemd -u "$EXEC_USER" --hp "$EXEC_HOME"
 sudo -u "$EXEC_USER" pm2 save
 
 echo "✅ Installation et démarrage terminés!"
-echo "📊 Vérifier le statut: pm2 status"
-
-echo "✅ Frontend is now managed by PM2"
-echo "📝 Frontend logs: $LOG_DIR/ryvie-frontend-*.log"
-echo "ℹ️ Useful commands:"
-echo "   - View logs: pm2 logs ryvie-frontend"
-echo "   - Stop: pm2 stop ryvie-frontend"
-echo "   - Restart: pm2 restart ryvie-frontend"
-echo "   - Stop everything: pm2 stop all"
-echo "   - Status: pm2 status"
-
 echo ""
+echo "📊 Services lancés en mode PRODUCTION:"
+echo "   - Backend:  http://localhost:3002 (Node.js compilé)"
+echo "   - Frontend: http://localhost:3000 (serve statique)"
+echo ""
+echo "📝 Logs:"
+echo "   - Backend:  $LOG_DIR/backend-prod-*.log"
+echo "   - Frontend: $LOG_DIR/frontend-prod-*.log"
+echo ""
+echo "ℹ️ Commandes utiles:"
+echo "   - Voir les logs: pm2 logs"
+echo "   - Rebuilder: $RYVIE_ROOT/Ryvie/scripts/rebuild-prod.sh"
+echo "   - Arrêter tout: pm2 stop all"
+echo "   - Statut: pm2 status"
+echo ""
+echo "💡 Consommation en mode PRODUCTION: ~200MB RAM"
 echo "-----------------------------------------------------"
 echo "Étape 12: Installation de Ryvie rPictures"
 echo "-----------------------------------------------------"
@@ -1665,6 +1697,14 @@ cd "$APPS_DIR/Ryvie-rPictures/docker"
 # 4. Créer le fichier .env avec les variables nécessaires
 echo "📝 Création du fichier .env..."
 
+# Charger le mot de passe LDAP depuis le fichier .env
+if [ -f "$CONFIG_DIR/ldap/.env" ]; then
+  source "$CONFIG_DIR/ldap/.env"
+else
+  echo "❌ Fichier $CONFIG_DIR/ldap/.env introuvable"
+  exit 1
+fi
+
 cat <<EOF > .env
 # The location where your uploaded files are stored
 UPLOAD_LOCATION=./library
@@ -1689,7 +1729,7 @@ DB_DATABASE_NAME=immich
 
 LDAP_URL= ldap://openldap:1389
 LDAP_BIND_DN=cn=admin,dc=example,dc=org
-LDAP_BIND_PASSWORD=adminpassword
+LDAP_BIND_PASSWORD=$LDAP_ADMIN_PASSWORD
 LDAP_BASE_DN=dc=example,dc=org
 LDAP_USER_BASE_DN=ou=users,dc=example,dc=org
 LDAP_USER_FILTER=(objectClass=inetOrgPerson)
