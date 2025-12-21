@@ -1832,40 +1832,53 @@ echo "-----------------------------------------------------"
 echo "Étape 15: Installation et préparation de Rclone"
 echo "-----------------------------------------------------"
 
-# Installer/mettre à jour rclone (méthode officielle)
-curl -fsSL https://rclone.org/install.sh | sudo bash
+# Installer unzip si nécessaire
+if ! command -v unzip &> /dev/null; then
+    echo "📦 Installation de unzip..."
+    install_pkgs unzip
+fi
 
-# Afficher le chemin réel du binaire (ne pas supposer /usr/bin/rclone)
+# Nettoyer les installations précédentes problématiques
+sudo rm -rf /usr/bin/rclone /usr/bin/rclone.new
+
+# Télécharger et installer rclone
+cd /tmp
+rm -f rclone-current-linux-amd64.zip
+curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip
+unzip -o rclone-current-linux-amd64.zip
+cd rclone-*-linux-amd64
+sudo cp rclone /usr/bin/
+sudo chown root:root /usr/bin/rclone
+sudo chmod 755 /usr/bin/rclone
+sudo mkdir -p /usr/local/share/man/man1
+sudo cp rclone.1 /usr/local/share/man/man1/ 2>/dev/null || true
+cd /tmp
+rm -rf rclone-*-linux-amd64*
+
+# Vérifier l'installation
 RBIN="$(command -v rclone || true)"
 if [ -z "$RBIN" ]; then
   echo "❌ rclone introuvable dans le PATH après installation"
   exit 1
 fi
 echo "✅ rclone trouvé: $RBIN"
-ls -l "$RBIN" 2>/dev/null || true
 rclone version || true
 
-# Rclone – config centralisée sous /data/config/rclone (persistée et montée dans Docker)
+# Configuration centralisée
 RCLONE_DIR="$CONFIG_DIR/rclone"
 RCLONE_CONF="$RCLONE_DIR/rclone.conf"
 sudo mkdir -p "$RCLONE_DIR"
 sudo touch "$RCLONE_CONF"
-
-# IMPORTANT: le container node tourne avec l'utilisateur node (uid/gid 1000)
-# et doit pouvoir écrire dans rclone.conf pour créer les remotes (Google Drive / Dropbox)
 sudo chown -R 1000:1000 "$RCLONE_DIR" || true
 sudo chmod 700 "$RCLONE_DIR" || true
 sudo chmod 600 "$RCLONE_CONF" || true
 
-# Export pour les sessions shell (host)
 export RCLONE_CONFIG="$RCLONE_CONF"
 grep -q 'RCLONE_CONFIG=' /etc/profile.d/ryvie_rclone.sh 2>/dev/null || \
   echo 'export RCLONE_CONFIG=/data/config/rclone/rclone.conf' | sudo tee /etc/profile.d/ryvie_rclone.sh >/dev/null
 
-echo ""
 echo "🧪 Test rclone (host)"
 rclone --config "$RCLONE_CONF" listremotes -vv 2>/dev/null || true
-
 echo ""
 echo "-----------------------------------------------------"
 echo "Étape 16: Installation et lancement de Ryvie rDrive (compose unique)"
