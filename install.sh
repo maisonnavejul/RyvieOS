@@ -1153,11 +1153,15 @@ EOF
         # Générer le fichier .env dans /data/config/rdrive
         cat > "$rdrive_env" << EOF
 REACT_APP_FRONTEND_URL=http://$netbird_ip:3010
-REACT_APP_BACKEND_URL=http://$netbird_ip:4000
+REACT_APP_BACKEND_URL=http://localhost:4000
 REACT_APP_WEBSOCKET_URL=ws://$netbird_ip:4000/ws
 REACT_APP_ONLYOFFICE_CONNECTOR_URL=http://$netbird_ip:5000
-REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://$netbird_ip:8090
+REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://localhost:8090
 LDAP_BIND_PASSWORD=$ldap_admin_password
+DROPBOX_APPKEY=fuv2aur5vtmg0r3
+DROPBOX_APPSECRET=ejsdcf3b51q8hvf
+GOOGLE_CLIENT_ID=758017908766-8586ul049ht0h10vgp779dskk4riu7ug.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=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
 EOF
         
         log_info "✅ .env rDrive généré → $rdrive_env"
@@ -1828,40 +1832,53 @@ echo "-----------------------------------------------------"
 echo "Étape 15: Installation et préparation de Rclone"
 echo "-----------------------------------------------------"
 
-# Installer/mettre à jour Rclone (méthode officielle)
-# (réexécutable sans risque : met à jour si déjà installé)
-curl -fsSL https://rclone.org/install.sh | sudo bash
-
-# Vérifie qu'il est bien là :
-# - essaie /usr/bin/rclone comme demandé
-# - sinon affiche l'emplacement réel retourné par command -v
-command -v rclone && ls -l /usr/bin/rclone || {
-  echo "ℹ️ rclone n'est pas sous /usr/bin, emplacement détecté :"
-  command -v rclone
-  ls -l "$(command -v rclone)" 2>/dev/null || true
-}
-
-# Version pour confirmation
-rclone version || true
-
-# Rclone – config centralisée sous /data/config/rclone
-mkdir -p "$CONFIG_DIR/rclone"
-touch "$CONFIG_DIR/rclone/rclone.conf"
-chmod 600 "$CONFIG_DIR/rclone/rclone.conf"
-sudo chown root:root "$CONFIG_DIR/rclone/rclone.conf" || true
-
-# Option pratique (host uniquement) : symlink facultatif pour compatibilité
-sudo mkdir -p /root/.config
-if [ ! -L /root/.config/rclone ]; then
-  sudo rm -rf /root/.config/rclone 2>/dev/null || true
-  sudo ln -s "$CONFIG_DIR/rclone" /root/.config/rclone
+# Installer unzip si nécessaire
+if ! command -v unzip &> /dev/null; then
+    echo "📦 Installation de unzip..."
+    install_pkgs unzip
 fi
 
-# Export pour les sessions shell (host)
-export RCLONE_CONFIG="$CONFIG_DIR/rclone/rclone.conf"
+# Nettoyer les installations précédentes problématiques
+sudo rm -rf /usr/bin/rclone /usr/bin/rclone.new
+
+# Télécharger et installer rclone
+cd /tmp
+rm -f rclone-current-linux-amd64.zip
+curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip
+unzip -o rclone-current-linux-amd64.zip
+cd rclone-*-linux-amd64
+sudo cp rclone /usr/bin/
+sudo chown root:root /usr/bin/rclone
+sudo chmod 755 /usr/bin/rclone
+sudo mkdir -p /usr/local/share/man/man1
+sudo cp rclone.1 /usr/local/share/man/man1/ 2>/dev/null || true
+cd /tmp
+rm -rf rclone-*-linux-amd64*
+
+# Vérifier l'installation
+RBIN="$(command -v rclone || true)"
+if [ -z "$RBIN" ]; then
+  echo "❌ rclone introuvable dans le PATH après installation"
+  exit 1
+fi
+echo "✅ rclone trouvé: $RBIN"
+rclone version || true
+
+# Configuration centralisée
+RCLONE_DIR="$CONFIG_DIR/rclone"
+RCLONE_CONF="$RCLONE_DIR/rclone.conf"
+sudo mkdir -p "$RCLONE_DIR"
+sudo touch "$RCLONE_CONF"
+sudo chown -R 1000:1000 "$RCLONE_DIR" || true
+sudo chmod 700 "$RCLONE_DIR" || true
+sudo chmod 600 "$RCLONE_CONF" || true
+
+export RCLONE_CONFIG="$RCLONE_CONF"
 grep -q 'RCLONE_CONFIG=' /etc/profile.d/ryvie_rclone.sh 2>/dev/null || \
   echo 'export RCLONE_CONFIG=/data/config/rclone/rclone.conf' | sudo tee /etc/profile.d/ryvie_rclone.sh >/dev/null
 
+echo "🧪 Test rclone (host)"
+rclone --config "$RCLONE_CONF" listremotes -vv 2>/dev/null || true
 echo ""
 echo "-----------------------------------------------------"
 echo "Étape 16: Installation et lancement de Ryvie rDrive (compose unique)"
@@ -1888,18 +1905,18 @@ if [ ! -f "$CONFIG_DIR/rdrive/.env" ]; then
   }
 fi
 
-# (Optionnel) s'assurer que rclone est montable au bon chemin
-if ! [ -x /usr/bin/rclone ]; then
-  RBIN="$(command -v rclone || true)"
-  if [ -n "$RBIN" ]; then
-    sudo ln -sf "$RBIN" /usr/bin/rclone
-  fi
-fi
-
 # 2) Lancement unique
 echo "🚀 Démarrage de la stack rDrive…"
 sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" pull || true
 sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" up -d --build
+
+echo ""
+echo "🧪 Test rclone (container app-rdrive-node)"
+if command -v docker >/dev/null 2>&1 && sudo docker ps --format '{{.Names}}' | grep -q '^app-rdrive-node$'; then
+  sudo docker exec -it app-rdrive-node sh -lc '/usr/bin/rclone version && /usr/bin/rclone --config /root/.config/rclone/rclone.conf listremotes -vv' || true
+else
+  echo "ℹ️ Container app-rdrive-node non démarré (test container ignoré)"
+fi
 
 # 3) Attentes/health (best-effort)
 echo "⏳ Attente des services (mongo, onlyoffice, node, frontend)…"
