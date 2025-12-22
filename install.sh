@@ -1153,10 +1153,10 @@ EOF
         # Générer le fichier .env dans /data/config/rdrive
         cat > "$rdrive_env" << EOF
 REACT_APP_FRONTEND_URL=http://$netbird_ip:3010
-REACT_APP_BACKEND_URL=http://$netbird_ip:4000
+REACT_APP_BACKEND_URL=http://localhost:4000
 REACT_APP_WEBSOCKET_URL=ws://$netbird_ip:4000/ws
 REACT_APP_ONLYOFFICE_CONNECTOR_URL=http://$netbird_ip:5000
-REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://$netbird_ip:8090
+REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://localhost:8090
 LDAP_BIND_PASSWORD=$ldap_admin_password
 DROPBOX_APPKEY=fuv2aur5vtmg0r3
 DROPBOX_APPSECRET=ejsdcf3b51q8hvf
