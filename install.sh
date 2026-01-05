@@ -20,7 +20,7 @@ echo "
 echo ""
 echo "Bienvenue sur Ryvie OS 🚀"
 echo "By Jules Maisonnave"
-echo "Ce script est un test : aucune installation n'est effectuée pour le moment."
+echo "v0.0.1"
 
 # --- CHANGED: controlled strict mode for critical sections only ---
 # Not failing globally; provide helpers to enable strict mode for critical parts
@@ -273,14 +273,25 @@ REPOS_OPT=(
     "Ryvie"
 )
 
-# Branche à cloner: interroge si RYVIE_BRANCH n'est pas défini
+# Branche à cloner: interroge si RYVIE_BRANCH n'est pas défini (timeout 5s)
 if [ -z "${RYVIE_BRANCH:-}" ]; then
-    read -p "Quelle branche veux-tu cloner ? [main]: " BRANCH_INPUT
-    BRANCH="${BRANCH_INPUT:-main}"
+    if read -t 10 -p "Quelle branche veux-tu cloner ? [main]: " BRANCH_INPUT; then
+        BRANCH="${BRANCH_INPUT:-main}"
+    else
+        echo
+        echo "⏱️ Aucun choix détecté en 5 secondes, utilisation de la branche main."
+        BRANCH="main"
+    fi
 else
     BRANCH="$RYVIE_BRANCH"
 fi
 echo "Branche sélectionnée: $BRANCH"
+
+USE_GITHUB_AUTH=1
+if [ "$BRANCH" = "main" ]; then
+    USE_GITHUB_AUTH=0
+    echo "ℹ️ Branche main sélectionnée: clonage sans authentification GitHub."
+fi
 
 # Fonction de vérification des identifiants
 verify_credentials() {
@@ -292,19 +303,23 @@ verify_credentials() {
     [[ "$status_code" == "200" ]]
 }
 
-# Identifiants GitHub: interroge si non fournis via env
-if [ -z "${GITHUB_USER:-}" ]; then
-    read -p "Entrez votre nom d'utilisateur GitHub : " GITHUB_USER
-fi
-if [ -z "${GITHUB_TOKEN:-}" ]; then
-    read -s -p "Entrez votre token GitHub personnel : " GITHUB_TOKEN
-    echo
-fi
-if verify_credentials "$GITHUB_USER" "$GITHUB_TOKEN"; then
-    echo "✅ Authentification GitHub réussie."
+if [ "$USE_GITHUB_AUTH" -eq 1 ]; then
+    # Identifiants GitHub: interroge si non fournis via env
+    if [ -z "${GITHUB_USER:-}" ]; then
+        read -p "Entrez votre nom d'utilisateur GitHub : " GITHUB_USER
+    fi
+    if [ -z "${GITHUB_TOKEN:-}" ]; then
+        read -s -p "Entrez votre token GitHub personnel : " GITHUB_TOKEN
+        echo
+    fi
+    if verify_credentials "$GITHUB_USER" "$GITHUB_TOKEN"; then
+        echo "✅ Authentification GitHub réussie."
+    else
+        echo "❌ Authentification GitHub échouée."
+        exit 1
+    fi
 else
-    echo "❌ Authentification GitHub échouée."
-    exit 1
+    echo "✅ Aucun identifiant GitHub requis pour la branche main."
 fi
 
 CREATED_DIRS=()
@@ -312,13 +327,23 @@ CREATED_DIRS=()
 log() {
     echo -e "$1"
 }
-OWNER="maisonnavejul"
+OWNER="ryvieos"
+
+build_repo_url() {
+    local repo="$1"
+    local host_path="github.com/${OWNER}/${repo}.git"
+    if [ "$USE_GITHUB_AUTH" -eq 1 ]; then
+        printf 'https://%s:%s@%s' "$GITHUB_USER" "$GITHUB_TOKEN" "$host_path"
+    else
+        printf 'https://%s' "$host_path"
+    fi
+}
 
 # Clonage des dépôts dans /data/apps
 cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
 for repo in "${REPOS_APPS[@]}"; do
     if [[ ! -d "$repo" ]]; then
-        repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
+        repo_url="$(build_repo_url "$repo")"
         log "📥 Clonage du dépôt $repo dans $APPS_DIR (branche $BRANCH)..."
         sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
         if [[ $? -eq 0 ]]; then
@@ -342,7 +367,7 @@ done
 cd "$RYVIE_ROOT" || { echo "❌ Impossible d'accéder à $RYVIE_ROOT"; exit 1; }
 for repo in "${REPOS_OPT[@]}"; do
     if [[ ! -d "$repo/.git" ]]; then
-        repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${OWNER}/${repo}.git"
+        repo_url="$(build_repo_url "$repo")"
         log "📥 Clonage du dépôt $repo dans $RYVIE_ROOT (branche $BRANCH)..."
         sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
         if [[ $? -eq 0 ]]; then
@@ -1153,10 +1178,10 @@ EOF
         # Générer le fichier .env dans /data/config/rdrive
         cat > "$rdrive_env" << EOF
 REACT_APP_FRONTEND_URL=http://$netbird_ip:3010
-REACT_APP_BACKEND_URL=http://localhost:4000
+REACT_APP_BACKEND_URL=http://$netbird_ip:4000
 REACT_APP_WEBSOCKET_URL=ws://$netbird_ip:4000/ws
 REACT_APP_ONLYOFFICE_CONNECTOR_URL=http://$netbird_ip:5000
-REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://localhost:8090
+REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://$netbird_ip:8090
 LDAP_BIND_PASSWORD=$ldap_admin_password
 DROPBOX_APPKEY=fuv2aur5vtmg0r3
 DROPBOX_APPSECRET=ejsdcf3b51q8hvf
@@ -1687,7 +1712,7 @@ if [ -d "Ryvie-rPictures" ]; then
     echo "✅ Le dépôt Ryvie-rPictures existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rPictures..."
-    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rPictures.git
+    sudo -H -u "$EXEC_USER" git clone https://github.com/ryvieos/Ryvie-rPictures.git
     if [ $? -ne 0 ]; then
         echo "❌ Échec du clonage du dépôt. Arrêt du script."
         exit 1
@@ -1772,7 +1797,7 @@ if [ -d "Ryvie-rTransfer" ]; then
     echo "✅ Le dépôt Ryvie-rTransfer existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rTransfer..."
-    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rTransfer.git || { echo "❌ Échec du clonage"; exit 1; }
+    sudo -H -u "$EXEC_USER" git clone https://github.com/ryvieos/Ryvie-rTransfer.git || { echo "❌ Échec du clonage"; exit 1; }
 fi
 
 # 2. Se placer dans le dossier Ryvie-rTransfer
@@ -1804,7 +1829,7 @@ if [ -d "Ryvie-rdrop" ]; then
     echo "✅ Le dépôt Ryvie-rdrop existe déjà."
 else
     echo "📥 Clonage du dépôt Ryvie-rdrop..."
-    sudo -H -u "$EXEC_USER" git clone https://github.com/maisonnavejul/Ryvie-rdrop.git
+    sudo -H -u "$EXEC_USER" git clone https://github.com/ryvieos/Ryvie-rdrop.git
     if [ $? -ne 0 ]; then
         echo "❌ Échec du clonage du dépôt Ryvie-rdrop."
         exit 1
