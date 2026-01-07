@@ -1183,10 +1183,9 @@ REACT_APP_WEBSOCKET_URL=ws://$netbird_ip:4000/ws
 REACT_APP_ONLYOFFICE_CONNECTOR_URL=http://$netbird_ip:5000
 REACT_APP_ONLYOFFICE_DOCUMENT_SERVER_URL=http://$netbird_ip:8090
 LDAP_BIND_PASSWORD=$ldap_admin_password
-DROPBOX_APPKEY=fuv2aur5vtmg0r3
-DROPBOX_APPSECRET=ejsdcf3b51q8hvf
-GOOGLE_CLIENT_ID=758017908766-8586ul049ht0h10vgp779dskk4riu7ug.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=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
+# Service OAuth centralisé (NE PAS MODIFIER)
+OAUTH_SERVICE_URL=https://cloudoauth-files.ryvie.fr
+INSTANCE_ID=$(get_machine_id)
 EOF
         
         log_info "✅ .env rDrive généré → $rdrive_env"
