@@ -1120,8 +1120,17 @@ generate_env_file() {
     
     # Fichier .env pour rtransfer
     local rtransfer_env="$CONFIG_DIR/rtransfer/.env"
+    
+    # Charger le mot de passe LDAP depuis le fichier .env
+    local ldap_admin_password=""
+    if [ -f "$CONFIG_DIR/ldap/.env" ]; then
+        source "$CONFIG_DIR/ldap/.env"
+        ldap_admin_password="$LDAP_ADMIN_PASSWORD"
+    fi
+    
     cat > "$rtransfer_env" << EOF
 APP_URL=https://$rtransfer
+LDAP_BIND_PASSWORD=$ldap_admin_password
 EOF
     
     # Fichier .env pour rdrop
