@@ -236,6 +236,74 @@ else
     install_pkgs rsync || { echo "❌ Échec de l'installation de rsync"; exit 1; }
 fi
 
+echo ""
+echo "------------------------------------------"
+echo " Sélection de la version à installer "
+echo "------------------------------------------"
+echo ""
+
+# Fonction pour récupérer la dernière release GitHub
+get_latest_release() {
+    local owner="$1"
+    local repo="$2"
+    local latest_tag
+    
+    latest_tag=$(curl -s "https://api.github.com/repos/${owner}/${repo}/releases/latest" | jq -r '.tag_name // empty')
+    
+    if [ -n "$latest_tag" ] && [ "$latest_tag" != "null" ]; then
+        echo "$latest_tag"
+        return 0
+    else
+        echo ""
+        return 1
+    fi
+}
+
+# Branche à cloner: interroge si RYVIE_BRANCH n'est pas défini (timeout 10s)
+if [ -z "${RYVIE_BRANCH:-}" ]; then
+    if read -t 10 -p "Quelle version veux-tu installer ? (appuie sur Entrée pour la dernière release stable): " BRANCH_INPUT; then
+        if [ -z "$BRANCH_INPUT" ]; then
+            echo "🔍 Récupération de la dernière release stable..."
+            LATEST_RELEASE=$(get_latest_release "$OWNER" "Ryvie")
+            if [ -n "$LATEST_RELEASE" ]; then
+                BRANCH="$LATEST_RELEASE"
+                echo "✅ Dernière release trouvée: $BRANCH"
+            else
+                echo "⚠️ Impossible de récupérer la dernière release, utilisation de 'main' par défaut."
+                BRANCH="main"
+            fi
+        else
+            BRANCH="$BRANCH_INPUT"
+        fi
+    else
+        echo
+        echo "⏱️ Aucun choix détecté en 10 secondes, récupération de la dernière release stable..."
+        LATEST_RELEASE=$(get_latest_release "$OWNER" "Ryvie")
+        if [ -n "$LATEST_RELEASE" ]; then
+            BRANCH="$LATEST_RELEASE"
+            echo "✅ Dernière release trouvée: $BRANCH"
+        else
+            echo "⚠️ Impossible de récupérer la dernière release, utilisation de 'main' par défaut."
+            BRANCH="main"
+        fi
+    fi
+else
+    BRANCH="$RYVIE_BRANCH"
+fi
+echo "Version sélectionnée: $BRANCH"
+
+USE_GITHUB_AUTH=1
+if [ "$BRANCH" = "main" ]; then
+    USE_GITHUB_AUTH=0
+    echo "ℹ️ Branche main sélectionnée: clonage sans authentification GitHub."
+else
+    # Pour les releases/tags, pas besoin d'authentification non plus (publiques)
+    if [[ "$BRANCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        USE_GITHUB_AUTH=0
+        echo "ℹ️ Release publique sélectionnée: clonage sans authentification GitHub."
+    fi
+fi
+
 # 3. Vérification de la mémoire physique (minimum 400 MB)
 MEMORY=$(free -m | awk '/Mem:/ {print $2}')
 MIN_MEMORY=400
@@ -261,6 +329,8 @@ echo "------------------------------------------"
 echo ""
 
 # Dépôts sur lesquels tu es invité
+OWNER="ryvieos"
+
 # Ryvie apps dans /data/apps
 REPOS_APPS=(
     "Ryvie-rPictures"
@@ -272,26 +342,6 @@ REPOS_APPS=(
 REPOS_OPT=(
     "Ryvie"
 )
-
-# Branche à cloner: interroge si RYVIE_BRANCH n'est pas défini (timeout 5s)
-if [ -z "${RYVIE_BRANCH:-}" ]; then
-    if read -t 10 -p "Quelle branche veux-tu cloner ? [main]: " BRANCH_INPUT; then
-        BRANCH="${BRANCH_INPUT:-main}"
-    else
-        echo
-        echo "⏱️ Aucun choix détecté en 5 secondes, utilisation de la branche main."
-        BRANCH="main"
-    fi
-else
-    BRANCH="$RYVIE_BRANCH"
-fi
-echo "Branche sélectionnée: $BRANCH"
-
-USE_GITHUB_AUTH=1
-if [ "$BRANCH" = "main" ]; then
-    USE_GITHUB_AUTH=0
-    echo "ℹ️ Branche main sélectionnée: clonage sans authentification GitHub."
-fi
 
 # Fonction de vérification des identifiants
 verify_credentials() {
@@ -327,7 +377,6 @@ CREATED_DIRS=()
 log() {
     echo -e "$1"
 }
-OWNER="ryvieos"
 
 build_repo_url() {
     local repo="$1"
@@ -2011,6 +2060,22 @@ echo ""
 echo "⚠️  IMPORTANT : Si vous rencontrez des problèmes de permissions Docker,"
 echo "    décommentez la ligne 'repair_docker_volumes' dans la section Docker du script"
 echo "    et relancez uniquement cette partie."
+echo ""
+
+# =====================================================
+# Nettoyage final : désactivation du service auto-install
+# =====================================================
+echo ""
+echo "======================================================"
+echo "🧹 Nettoyage final"
+echo "======================================================"
+echo ""
+echo "Désactivation du service d'installation automatique..."
+sudo systemctl disable ryvie-install.service 2>/dev/null || true
+echo "Suppression des scripts d'installation..."
+sudo rm -f /root/run-install.sh
+sudo rm -f /home/ryvie/install.sh
+echo "✅ Service désactivé - ne se relancera plus au prochain reboot"
 echo ""
 
 echo "newgrp docker"
