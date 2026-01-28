@@ -1992,6 +1992,39 @@ echo "🚀 Démarrage de la stack rDrive…"
 sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" pull || true
 sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" up -d --build
 
+# 2b) Correction du problème de race condition rclone
+# Lors du premier démarrage, le conteneur node_create_user peut échouer
+# à cause d'un conflit de montage rclone (race condition pendant le pull des images).
+# Cette vérification détecte l'erreur et relance automatiquement le conteneur.
+echo ""
+echo "🔍 Vérification du démarrage de rDrive..."
+sleep 5
+
+# Vérifier si le conteneur node_create_user a échoué avec l'erreur de montage rclone
+if sudo docker ps -a --filter "name=app-rdrive-node-create-user" --format "{{.Status}}" | grep -q "Exited"; then
+  # Vérifier si c'est bien l'erreur de montage rclone
+  if sudo docker inspect app-rdrive-node-create-user 2>/dev/null | grep -q "error mounting.*rclone"; then
+    echo "⚠️  Détection d'un problème de race condition rclone (erreur temporaire)"
+    echo "🔄 Relancement du conteneur node_create_user..."
+    
+    # Supprimer le conteneur en erreur
+    sudo docker rm -f app-rdrive-node-create-user 2>/dev/null || true
+    
+    # Relancer uniquement ce conteneur
+    cd "$RDRIVE_DIR" && sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" up -d node_create_user
+    
+    # Attendre quelques secondes pour vérifier le succès
+    sleep 3
+    
+    if sudo docker ps -a --filter "name=app-rdrive-node-create-user" --format "{{.Status}}" | grep -q "Exited (0)"; then
+      echo "✅ Conteneur node_create_user relancé avec succès"
+    else
+      echo "⚠️  Le conteneur node_create_user a redémarré mais vérifiez les logs si nécessaire:"
+      echo "    sudo docker logs app-rdrive-node-create-user"
+    fi
+  fi
+fi
+
 echo ""
 echo "🧪 Test rclone (container app-rdrive-node)"
 if command -v docker >/dev/null 2>&1 && sudo docker ps --format '{{.Names}}' | grep -q '^app-rdrive-node$'; then
