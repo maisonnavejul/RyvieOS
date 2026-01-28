@@ -1946,7 +1946,13 @@ if [ ! -f rclone ]; then
     exit 1
 fi
 
-sudo cp -f rclone /usr/bin/ || {
+# S'assurer que /usr/bin/rclone est bien un fichier (pas un dossier)
+if [ -d /usr/bin/rclone ]; then
+    echo "🧹 Suppression du dossier /usr/bin/rclone existant..."
+    sudo rm -rf /usr/bin/rclone
+fi
+
+sudo cp -f rclone /usr/bin/rclone || {
     echo "❌ Échec de la copie de rclone vers /usr/bin/"
     exit 1
 }
@@ -1971,9 +1977,11 @@ RCLONE_DIR="$CONFIG_DIR/rclone"
 RCLONE_CONF="$RCLONE_DIR/rclone.conf"
 sudo mkdir -p "$RCLONE_DIR"
 sudo touch "$RCLONE_CONF"
-sudo chown -R 1000:1000 "$RCLONE_DIR" || true
-sudo chmod 700 "$RCLONE_DIR" || true
-sudo chmod 600 "$RCLONE_CONF" || true
+# Permissions compatibles avec Docker (root peut lire/écrire)
+sudo chown root:root "$RCLONE_DIR" "$RCLONE_CONF" || true
+sudo chmod 755 "$RCLONE_DIR" || true
+sudo chmod 644 "$RCLONE_CONF" || true
+echo "✅ Configuration rclone créée dans $RCLONE_DIR"
 
 export RCLONE_CONFIG="$RCLONE_CONF"
 grep -q 'RCLONE_CONFIG=' /etc/profile.d/ryvie_rclone.sh 2>/dev/null || \
