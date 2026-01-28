@@ -78,11 +78,6 @@ fi
 # PM2 utilise son répertoire par défaut (~/.pm2)
 sudo rm -f /etc/profile.d/ryvie_pm2.sh
 
-# rclone configuration path under /data/config
-export RCLONE_CONFIG="$CONFIG_DIR/rclone/rclone.conf"
-sudo mkdir -p "$(dirname "$RCLONE_CONFIG")"
-sudo touch "$RCLONE_CONFIG" || true
-sudo chmod 600 "$RCLONE_CONFIG" || true
 
 # helper: retourne le répertoire de travail des apps (path-only)
 get_work_dir() {
@@ -1921,19 +1916,40 @@ if ! command -v unzip &> /dev/null; then
 fi
 
 # Nettoyer les installations précédentes problématiques
+echo "🧹 Nettoyage des installations précédentes de rclone..."
+sudo rm -rf /usr/bin/rclone 2>/dev/null || true
+sudo rm -f /usr/bin/rclone.new 2>/dev/null || true
+
+# Vérifier que /usr/bin/rclone n'existe plus
 if [ -e /usr/bin/rclone ]; then
-    echo "🧹 Suppression de l'ancienne installation de rclone..."
-    sudo rm -rf /usr/bin/rclone
+    echo "⚠️ /usr/bin/rclone existe toujours, tentative de suppression forcée..."
+    sudo rm -rf /usr/bin/rclone || {
+        echo "❌ Impossible de supprimer /usr/bin/rclone"
+        ls -la /usr/bin/rclone
+        exit 1
+    }
 fi
-sudo rm -f /usr/bin/rclone.new
 
 # Télécharger et installer rclone
-cd /tmp
+cd /tmp || exit 1
 rm -f rclone-current-linux-amd64.zip
-curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip
+curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip || {
+    echo "❌ Échec du téléchargement de rclone"
+    exit 1
+}
 unzip -o rclone-current-linux-amd64.zip
-cd rclone-*-linux-amd64
-sudo cp -f rclone /usr/bin/
+cd rclone-*-linux-amd64 || exit 1
+
+# Copier le binaire avec vérification
+if [ ! -f rclone ]; then
+    echo "❌ Binaire rclone introuvable après extraction"
+    exit 1
+fi
+
+sudo cp -f rclone /usr/bin/ || {
+    echo "❌ Échec de la copie de rclone vers /usr/bin/"
+    exit 1
+}
 sudo chown root:root /usr/bin/rclone
 sudo chmod 755 /usr/bin/rclone
 sudo mkdir -p /usr/local/share/man/man1
