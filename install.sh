@@ -1951,8 +1951,12 @@ RCLONE_DIR="$CONFIG_DIR/rclone"
 RCLONE_CONF="$RCLONE_DIR/rclone.conf"
 sudo mkdir -p "$RCLONE_DIR"
 sudo touch "$RCLONE_CONF"
-sudo chown -R 1000:1000 "$RCLONE_DIR" || true
+# Permissions exactes de la VM fonctionnelle:
+# - Répertoire: ryvie:ryvie (1000:1000) avec 700
+# - Fichier: root:ryvie (0:1000) avec 600
+sudo chown 1000:1000 "$RCLONE_DIR" || true
 sudo chmod 700 "$RCLONE_DIR" || true
+sudo chown root:1000 "$RCLONE_CONF" || true
 sudo chmod 600 "$RCLONE_CONF" || true
 
 export RCLONE_CONFIG="$RCLONE_CONF"
