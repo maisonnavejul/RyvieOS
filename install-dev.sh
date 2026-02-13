@@ -78,6 +78,11 @@ fi
 # PM2 utilise son répertoire par défaut (~/.pm2)
 sudo rm -f /etc/profile.d/ryvie_pm2.sh
 
+# rclone configuration path under /data/config
+export RCLONE_CONFIG="$CONFIG_DIR/rclone/rclone.conf"
+sudo mkdir -p "$(dirname "$RCLONE_CONFIG")"
+sudo touch "$RCLONE_CONFIG" || true
+sudo chmod 600 "$RCLONE_CONFIG" || true
 
 # helper: retourne le répertoire de travail des apps (path-only)
 get_work_dir() {
@@ -288,9 +293,9 @@ fi
 echo "Version sélectionnée: $BRANCH"
 
 USE_GITHUB_AUTH=1
-if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "dev" ]; then
+if [ "$BRANCH" = "main" ]; then
     USE_GITHUB_AUTH=0
-    echo "ℹ️ Branche $BRANCH sélectionnée: clonage sans authentification GitHub."
+    echo "ℹ️ Branche main sélectionnée: clonage sans authentification GitHub."
 else
     # Pour les releases/tags, pas besoin d'authentification non plus (publiques)
     if [[ "$BRANCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
@@ -326,6 +331,13 @@ echo ""
 # Dépôts sur lesquels tu es invité
 OWNER="ryvieos"
 
+# Ryvie apps dans /data/apps
+REPOS_APPS=(
+    "Ryvie-rPictures"
+    "Ryvie-rTransfer"
+    "Ryvie-rdrop"
+    "Ryvie-rDrive"
+)
 # Ryvie principal dans /opt/ryvie
 REPOS_OPT=(
     "Ryvie"
@@ -375,6 +387,24 @@ build_repo_url() {
         printf 'https://%s' "$host_path"
     fi
 }
+
+# Clonage des dépôts dans /data/apps
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
+for repo in "${REPOS_APPS[@]}"; do
+    if [[ ! -d "$repo" ]]; then
+        repo_url="$(build_repo_url "$repo")"
+        log "📥 Clonage du dépôt $repo dans $APPS_DIR (branche $BRANCH)..."
+        sudo -H -u "$EXEC_USER" git clone --branch "$BRANCH" "$repo_url" "$repo"
+        if [[ $? -eq 0 ]]; then
+            CREATED_DIRS+=("$APPS_DIR/$repo")
+        else
+            log "❌ Échec du clonage du dépôt : $repo"
+        fi
+    else
+        log "✅ Dépôt déjà cloné: $repo"
+        sudo -H -u "$EXEC_USER" git -C "$repo" pull --ff-only || true
+    fi
+done
 
 # Clonage de Ryvie dans /opt (devient /opt/Ryvie)
 # Créer le dossier parent avec les bonnes permissions pour permettre le clonage
@@ -773,6 +803,7 @@ readonly SETUP_KEY=$SETUP_KEY_VALUE
 readonly API_ENDPOINT="https://api.ryvie.fr/api/register"
 readonly NETBIRD_INTERFACE="wt0"
 readonly TARGET_DIR="$RYVIE_ROOT/Ryvie/Ryvie-Front/src/config"
+RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
 
 # Persistance NetBird sous $DATA_ROOT/netbird (idempotent)
 
@@ -1159,26 +1190,51 @@ EOF
     
     log_info "Fichiers .env générés pour rtransfer et rdrop"
 
-    # --- rDrive : génération du .env avec l'IP NetBird ---
-    log_info "Génération du .env pour rDrive..."
-    
-    # Créer le dossier config/rdrive
-    mkdir -p "$CONFIG_DIR/rdrive"
-    local rdrive_env="$CONFIG_DIR/rdrive/.env"
-    
-    # Récupérer l'IP NetBird
-    local netbird_ip
-    netbird_ip=$(get_netbird_ip)
-    
-    # Charger le mot de passe LDAP depuis le fichier .env
-    local ldap_admin_password=""
-    if [ -f "$CONFIG_DIR/ldap/.env" ]; then
-        source "$CONFIG_DIR/ldap/.env"
-        ldap_admin_password="$LDAP_ADMIN_PASSWORD"
+    # --- Déploiement dans les répertoires des apps ---
+    # rtransfer
+    local rtransfer_app_dir="$APPS_DIR/Ryvie-rTransfer"
+    if [ -d "$rtransfer_app_dir" ]; then
+        local rtransfer_app_env="$rtransfer_app_dir/.env"
+        [ -f "$rtransfer_app_env" ] && cp "$rtransfer_app_env" "$rtransfer_app_env.bak.$(date +%s)" || true
+        cp -f "$rtransfer_env" "$rtransfer_app_env"
+        chmod 600 "$rtransfer_app_env" || true
+        chown "$EXEC_USER:$EXEC_USER" "$rtransfer_app_env" 2>/dev/null || true
+        log_info "✅ .env déployé → $rtransfer_app_env"
     fi
     
-    # Générer le fichier .env dans /data/config/rdrive
-    cat > "$rdrive_env" << EOF
+    # rdrop
+    local rdrop_app_dir="$APPS_DIR/Ryvie-rdrop"
+    if [ -d "$rdrop_app_dir" ]; then
+        local rdrop_app_env="$rdrop_app_dir/.env"
+        [ -f "$rdrop_app_env" ] && cp "$rdrop_app_env" "$rdrop_app_env.bak.$(date +%s)" || true
+        cp -f "$rdrop_env" "$rdrop_app_env"
+        chmod 600 "$rdrop_app_env" || true
+        chown "$EXEC_USER:$EXEC_USER" "$rdrop_app_env" 2>/dev/null || true
+        log_info "✅ .env déployé → $rdrop_app_env"
+    fi
+
+    # --- rDrive : génération du .env avec l'IP NetBird ---
+    local rdrive_app_dir="$APPS_DIR/Ryvie-rDrive/tdrive"
+    if [ -d "$rdrive_app_dir" ]; then
+        log_info "Génération du .env pour rDrive..."
+        
+        # Créer le dossier config/rdrive
+        mkdir -p "$CONFIG_DIR/rdrive"
+        local rdrive_env="$CONFIG_DIR/rdrive/.env"
+        
+        # Récupérer l'IP NetBird
+        local netbird_ip
+        netbird_ip=$(get_netbird_ip)
+        
+        # Charger le mot de passe LDAP depuis le fichier .env
+        local ldap_admin_password=""
+        if [ -f "$CONFIG_DIR/ldap/.env" ]; then
+            source "$CONFIG_DIR/ldap/.env"
+            ldap_admin_password="$LDAP_ADMIN_PASSWORD"
+        fi
+        
+        # Générer le fichier .env dans /data/config/rdrive
+        cat > "$rdrive_env" << EOF
 REACT_APP_FRONTEND_URL=http://$netbird_ip:3010
 REACT_APP_BACKEND_URL=http://$netbird_ip:4000
 REACT_APP_WEBSOCKET_URL=ws://$netbird_ip:4000/ws
@@ -1189,8 +1245,19 @@ LDAP_BIND_PASSWORD=$ldap_admin_password
 OAUTH_SERVICE_URL=https://cloudoauth-files.ryvie.fr
 INSTANCE_ID=$(get_machine_id)
 EOF
-    
-    log_info "✅ .env rDrive généré → $rdrive_env"
+        
+        log_info "✅ .env rDrive généré → $rdrive_env"
+        
+        # Déployer dans le répertoire de l'app
+        local rdrive_app_env="$rdrive_app_dir/.env"
+        [ -f "$rdrive_app_env" ] && cp "$rdrive_app_env" "$rdrive_app_env.bak.$(date +%s)" || true
+        cp -f "$rdrive_env" "$rdrive_app_env"
+        chmod 600 "$rdrive_app_env" || true
+        chown "$EXEC_USER:$EXEC_USER" "$rdrive_app_env" 2>/dev/null || true
+        log_info "✅ .env déployé → $rdrive_app_env"
+    else
+        log_info "⚠️ Ryvie-rDrive non trouvé, skip de la génération du .env rDrive"
+    fi
 
     log_info "Configuration d'environnement terminée"
 }
@@ -1211,6 +1278,10 @@ validate_prerequisites() {
     # Check required directories exist or can be created
     if [ ! -d "$(dirname "$TARGET_DIR")" ] && ! mkdir -p "$(dirname "$TARGET_DIR")" 2>/dev/null; then
         log_warning "Cannot create target directory structure: $TARGET_DIR"
+    fi
+    
+    if [ ! -d "$(dirname "$RDRIVE_DIR")" ]; then
+        log_warning "RDrive directory structure not found: $RDRIVE_DIR"
     fi
 }
 
@@ -1686,123 +1757,279 @@ echo "   - Arrêter tout: pm2 stop all"
 echo "   - Statut: pm2 status"
 echo ""
 echo "💡 Consommation en mode PRODUCTION: ~200MB RAM"
+echo "-----------------------------------------------------"
+echo "Étape 12: Installation de Ryvie rPictures"
+echo "-----------------------------------------------------"
+# 1. Se placer dans le dossier des applications (APPS_DIR défini en haut)
+echo "📁 Dossier sélectionné : $APPS_DIR"
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
 
-# =============================================================================
-# Étape 12: Installation séquentielle des apps via le worker Node.js
-# =============================================================================
-# Installe les apps rdrop, rdrive, rtransfer, rpictures une par une
-# en appelant directement le worker d'installation (installWorker.js),
-# sans passer par l'API HTTP ni nécessiter d'authentification.
-# =============================================================================
-
-INSTALL_APPS_BACKEND_DIR="$RYVIE_ROOT/Ryvie/Ryvie-Back"
-INSTALL_APPS_WORKER_PATH="$INSTALL_APPS_BACKEND_DIR/dist/workers/installWorker.js"
-INSTALL_APPS_DEFAULT=("rdrop" "rdrive" "rtransfer" "rpictures")
-INSTALL_APPS_KEYCLOAK_CONTAINER="keycloak"
-
-echo ""
-echo -e "\033[1m╔══════════════════════════════════════════════════╗\033[0m"
-echo -e "\033[1m║   🚀 Installation séquentielle des apps Ryvie   ║\033[0m"
-echo -e "\033[1m╚══════════════════════════════════════════════════╝\033[0m"
-echo ""
-echo -e "\033[0;34mℹ️  \033[0mApps à installer : ${INSTALL_APPS_DEFAULT[*]}"
-echo ""
-
-# --- Vérification du worker ---
-if [ ! -f "$INSTALL_APPS_WORKER_PATH" ]; then
-  echo -e "\033[1;33m⚠️  \033[0mWorker non trouvé : $INSTALL_APPS_WORKER_PATH"
-  echo -e "\033[0;34mℹ️  \033[0mCompilation du backend..."
-  cd "$INSTALL_APPS_BACKEND_DIR" && npm run build
-  if [ ! -f "$INSTALL_APPS_WORKER_PATH" ]; then
-    echo -e "\033[0;31m❌ \033[0mImpossible de trouver le worker après compilation"
-    exit 1
-  fi
-fi
-
-if ! command -v node &> /dev/null; then
-  echo -e "\033[0;31m❌ \033[0mNode.js n'est pas installé"
-  exit 1
-fi
-
-# Charger les variables d'environnement du backend
-if [ -f "$INSTALL_APPS_BACKEND_DIR/.env" ]; then
-  set -a
-  source "$INSTALL_APPS_BACKEND_DIR/.env"
-  set +a
-fi
-
-# --- Attente de Keycloak ---
-echo -e "\033[0;34mℹ️  \033[0mVérification du démarrage de Keycloak..."
-_kc_attempt=1
-_kc_max=60
-while [ $_kc_attempt -le $_kc_max ]; do
-  if docker ps --filter "name=^/${INSTALL_APPS_KEYCLOAK_CONTAINER}$" --format '{{.Names}}' | grep -q "$INSTALL_APPS_KEYCLOAK_CONTAINER" \
-    && docker exec "$INSTALL_APPS_KEYCLOAK_CONTAINER" /opt/keycloak/bin/kcadm.sh get realms/ryvie --fields id >/dev/null 2>&1; then
-    echo -e "\033[0;32m✅ \033[0mKeycloak est prêt"
-    break
-  fi
-  echo -e "\033[0;34mℹ️  \033[0mKeycloak pas encore prêt (tentative $_kc_attempt/$_kc_max)..."
-  sleep 5
-  _kc_attempt=$((_kc_attempt + 1))
-done
-if [ $_kc_attempt -gt $_kc_max ]; then
-  echo -e "\033[0;31m❌ \033[0mKeycloak n'a pas démarré après $((_kc_max * 5)) secondes"
-  exit 1
-fi
-
-# --- Installation séquentielle ---
-_apps_total=${#INSTALL_APPS_DEFAULT[@]}
-_apps_success=0
-_apps_failed=()
-
-for _i in "${!INSTALL_APPS_DEFAULT[@]}"; do
-  _app_id="${INSTALL_APPS_DEFAULT[$_i]}"
-  _app_num=$((_i + 1))
-
-  echo -e "\033[1m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-  echo -e "\033[0;36m\033[1m▶ \033[0m\033[1m[$_app_num/$_apps_total] Installation de \033[1m$_app_id\033[0m..."
-  echo ""
-
-  # Exécuter le worker directement (même mécanisme que le backend)
-  if node "$INSTALL_APPS_WORKER_PATH" "$_app_id"; then
-    echo -e "\033[0;32m✅ \033[0m$_app_id installé avec succès !"
-    _apps_success=$((_apps_success + 1))
-  else
-    echo -e "\033[0;31m❌ \033[0mL'installation de $_app_id a échoué"
-    _apps_failed+=("$_app_id")
-  fi
-
-  echo ""
-
-  # Petite pause entre les installations pour laisser le système respirer
-  if [ "$_app_num" -lt "$_apps_total" ]; then
-    echo -e "\033[0;34mℹ️  \033[0mPause de 5 secondes avant la prochaine installation..."
-    sleep 5
-  fi
-done
-
-# --- Résumé ---
-echo -e "\033[1m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-echo ""
-echo -e "\033[1m📊 Résumé de l'installation des apps :\033[0m"
-echo ""
-echo -e "  \033[0;32m✅ Réussies : $_apps_success/$_apps_total\033[0m"
-
-if [ ${#_apps_failed[@]} -gt 0 ]; then
-  echo -e "  \033[0;31m❌ Échouées : ${_apps_failed[*]}\033[0m"
-  echo ""
-  echo -e "\033[1;33m⚠️  \033[0mVous pouvez réinstaller les apps échouées via l'App Store ou en relançant le worker manuellement."
+# 2. Cloner le dépôt si pas déjà présent
+if [ -d "Ryvie-rPictures" ]; then
+    echo "✅ Le dépôt Ryvie-rPictures existe déjà."
 else
-  echo ""
-  echo -e "\033[0;32m✅ \033[0mToutes les apps ont été installées avec succès !"
+    echo "📥 Clonage du dépôt Ryvie-rPictures..."
+    sudo -H -u "$EXEC_USER" git clone https://github.com/ryvieos/Ryvie-rPictures.git
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt. Arrêt du script."
+        exit 1
+    fi
 fi
 
-# --- Correction des permissions post-installation ---
-# Le worker tourne en root via ce script, mais le backend tourne en tant que $EXEC_USER.
-# Sans ce chown, le backend ne peut pas lire les manifests (EACCES).
-echo -e "\033[0;34mℹ️  \033[0mCorrection des permissions des manifests et apps..."
-sudo chown -R "$EXEC_USER:$EXEC_USER" "$CONFIG_DIR/manifests" 2>/dev/null || true
-sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" 2>/dev/null || true
+
+# 3. Se placer dans le dossier docker
+cd "$APPS_DIR/Ryvie-rPictures/docker"
+
+# 4. Créer le fichier .env avec les variables nécessaires
+echo "📝 Création du fichier .env..."
+
+# Charger le mot de passe LDAP depuis le fichier .env
+if [ -f "$CONFIG_DIR/ldap/.env" ]; then
+  source "$CONFIG_DIR/ldap/.env"
+else
+  echo "❌ Fichier $CONFIG_DIR/ldap/.env introuvable"
+  exit 1
+fi
+
+cat <<EOF > .env
+# The location where your uploaded files are stored
+UPLOAD_LOCATION=./library
+
+# The location where your database files are stored. Network shares are not supported for the database
+DB_DATA_LOCATION=./postgres
+
+# To set a timezone, uncomment the next line and change Etc/UTC to a TZ identifier from this list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List
+# TZ=Etc/UTC
+
+# The Immich version to use. You can pin this to a specific version like "v2.1.0"
+IMMICH_VERSION=v2
+
+# Connection secret for postgres. You should change it to a random password
+# Please use only the characters \`A-Za-z0-9\`, without special characters or spaces
+DB_PASSWORD=postgres
+
+# The values below this line do not need to be changed
+###################################################################################
+DB_USERNAME=postgres
+DB_DATABASE_NAME=immich
+
+LDAP_URL= ldap://openldap:1389
+LDAP_BIND_DN=cn=admin,dc=example,dc=org
+LDAP_BIND_PASSWORD=$LDAP_ADMIN_PASSWORD
+LDAP_BASE_DN=dc=example,dc=org
+LDAP_USER_BASE_DN=ou=users,dc=example,dc=org
+LDAP_USER_FILTER=(objectClass=inetOrgPerson)
+LDAP_ADMIN_GROUP=admins
+LDAP_EMAIL_ATTRIBUTE=mail
+LDAP_NAME_ATTRIBUTE=cn
+LDAP_PASSWORD_ATTRIBUTE=userPassword
+EOF
+
+echo "✅ Fichier .env créé."
+
+# 5. Lancer les services Immich en mode production
+echo "🚀 Lancement de rPictures avec Docker Compose..."
+sudo docker compose -f docker-compose.yml up -d
+
+# 6. Attente du démarrage du service (optionnel : tester avec un port ouvert)
+echo "⏳ Attente du démarrage de rPictures (port 3013)..."
+until curl -s http://localhost:3013 > /dev/null; do
+    sleep 2
+    echo -n "."
+done
+echo ""
+echo "✅ rPictures est lancé."
+echo "ℹ️ Note: La synchronisation LDAP se fera après la création du premier utilisateur."
+
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 13: Installation de Ryvie rTransfer"
+echo "-----------------------------------------------------"
+
+# Aller dans le dossier de travail /data/apps
+cd "$APPS_DIR" || { echo "❌ Impossible d'accéder à $APPS_DIR"; exit 1; }
+
+# 1. Cloner le dépôt si pas déjà présent
+if [ -d "Ryvie-rTransfer" ]; then
+    echo "✅ Le dépôt Ryvie-rTransfer existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie-rTransfer..."
+    sudo -H -u "$EXEC_USER" git clone https://github.com/ryvieos/Ryvie-rTransfer.git || { echo "❌ Échec du clonage"; exit 1; }
+fi
+
+# 2. Se placer dans le dossier Ryvie-rTransfer
+cd "Ryvie-rTransfer" || { echo "❌ Impossible d'accéder à Ryvie-rTransfer"; exit 1; }
+pwd
+
+# 3. Lancer rTransfer avec docker-compose.yml
+echo "🚀 Lancement de Ryvie rTransfer avec docker-compose.yml..."
+sudo docker compose -f docker-compose.yml up -d
+
+# 4. Vérification du démarrage sur le port 3000
+echo "⏳ Attente du démarrage de rTransfer (port 3011)..."
+until curl -s http://localhost:3011 > /dev/null; do
+    sleep 2
+    echo -n "."
+done
+echo ""
+echo "✅ rTransfer est lancé et prêt avec l'authentification LDAP."
+
+
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 14: Installation de Ryvie rDrop"
+echo "-----------------------------------------------------"
+
+cd "$APPS_DIR"
+
+if [ -d "Ryvie-rdrop" ]; then
+    echo "✅ Le dépôt Ryvie-rdrop existe déjà."
+else
+    echo "📥 Clonage du dépôt Ryvie-rdrop..."
+    sudo -H -u "$EXEC_USER" git clone https://github.com/ryvieos/Ryvie-rdrop.git
+    if [ $? -ne 0 ]; then
+        echo "❌ Échec du clonage du dépôt Ryvie-rdrop."
+        exit 1
+    fi
+fi
+
+cd Ryvie-rdrop/rDrop-main
+
+echo "✅ Répertoire atteint : $(pwd)"
+
+if [ -f docker/openssl/create.sh ]; then
+    chmod +x docker/openssl/create.sh
+    echo "✅ Script create.sh rendu exécutable."
+else
+    echo "❌ Script docker/openssl/create.sh introuvable."
+    exit 1
+fi
+
+echo "📦 Suppression des conteneurs orphelins..."
+sudo docker compose down --remove-orphans
+sudo docker compose up -d
+
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 15: Installation et préparation de Rclone"
+echo "-----------------------------------------------------"
+
+# Installer unzip si nécessaire
+if ! command -v unzip &> /dev/null; then
+    echo "📦 Installation de unzip..."
+    install_pkgs unzip
+fi
+
+# Nettoyer les installations précédentes problématiques
+sudo rm -rf /usr/bin/rclone /usr/bin/rclone.new
+
+# Télécharger et installer rclone
+cd /tmp
+rm -f rclone-current-linux-amd64.zip
+curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip
+unzip -o rclone-current-linux-amd64.zip
+cd rclone-*-linux-amd64
+sudo cp rclone /usr/bin/
+sudo chown root:root /usr/bin/rclone
+sudo chmod 755 /usr/bin/rclone
+sudo mkdir -p /usr/local/share/man/man1
+sudo cp rclone.1 /usr/local/share/man/man1/ 2>/dev/null || true
+cd /tmp
+rm -rf rclone-*-linux-amd64*
+
+# Vérifier l'installation
+RBIN="$(command -v rclone || true)"
+if [ -z "$RBIN" ]; then
+  echo "❌ rclone introuvable dans le PATH après installation"
+  exit 1
+fi
+echo "✅ rclone trouvé: $RBIN"
+rclone version || true
+
+# Configuration centralisée
+RCLONE_DIR="$CONFIG_DIR/rclone"
+RCLONE_CONF="$RCLONE_DIR/rclone.conf"
+sudo mkdir -p "$RCLONE_DIR"
+sudo touch "$RCLONE_CONF"
+# Permissions exactes de la VM fonctionnelle:
+# - Répertoire: ryvie:ryvie (1000:1000) avec 700
+# - Fichier: root:ryvie (0:1000) avec 600
+sudo chown 1000:1000 "$RCLONE_DIR" || true
+sudo chmod 700 "$RCLONE_DIR" || true
+sudo chown root:1000 "$RCLONE_CONF" || true
+sudo chmod 600 "$RCLONE_CONF" || true
+
+export RCLONE_CONFIG="$RCLONE_CONF"
+grep -q 'RCLONE_CONFIG=' /etc/profile.d/ryvie_rclone.sh 2>/dev/null || \
+  echo 'export RCLONE_CONFIG=/data/config/rclone/rclone.conf' | sudo tee /etc/profile.d/ryvie_rclone.sh >/dev/null
+
+echo "🧪 Test rclone (host)"
+rclone --config "$RCLONE_CONF" listremotes -vv 2>/dev/null || true
+echo ""
+echo "-----------------------------------------------------"
+echo "Étape 16: Installation et lancement de Ryvie rDrive (compose unique)"
+echo "-----------------------------------------------------"
+
+# Dossier rDrive
+RDRIVE_DIR="$APPS_DIR/Ryvie-rDrive/tdrive"
+
+# 1) Vérifier la présence du compose et du .env
+cd "$RDRIVE_DIR" || { echo "❌ Impossible d'accéder à $RDRIVE_DIR"; exit 1; }
+
+if [ ! -f docker-compose.yml ]; then
+  echo "❌ docker-compose.yml introuvable dans $RDRIVE_DIR"
+  echo "   Place le fichier docker-compose.yml ici puis relance."
+  exit 1
+fi
+
+# Le .env front/back est généré plus haut (NetBird → generate_env_file)
+if [ ! -f "$CONFIG_DIR/rdrive/.env" ]; then
+  echo "⚠️ /data/config/rdrive/.env introuvable — tentative de régénération…"
+  generate_env_file || {
+    echo "❌ Impossible de générer /data/config/rdrive/.env"
+    exit 1
+  }
+fi
+
+# 2) Lancement unique
+echo "🚀 Démarrage de la stack rDrive…"
+sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" pull || true
+sudo docker compose --env-file "$CONFIG_DIR/rdrive/.env" up -d --build
+
+echo ""
+echo "🧪 Test rclone (container app-rdrive-node)"
+if command -v docker >/dev/null 2>&1 && sudo docker ps --format '{{.Names}}' | grep -q '^app-rdrive-node$'; then
+  sudo docker exec -it app-rdrive-node sh -lc '/usr/bin/rclone version && /usr/bin/rclone --config /root/.config/rclone/rclone.conf listremotes -vv' || true
+else
+  echo "ℹ️ Container app-rdrive-node non démarré (test container ignoré)"
+fi
+
+# 3) Attentes/health (best-effort)
+echo "⏳ Attente des services (mongo, onlyoffice, node, frontend)…"
+wait_for_service() {
+  local svc="$1"
+  local retries=60
+  while [ $retries -gt 0 ]; do
+    if sudo docker compose ps --format json | jq -e ".[] | select(.Service==\"$svc\") | .State==\"running\"" >/dev/null 2>&1; then
+      # si health est défini, essaye de lire
+      if sudo docker inspect --format='{{json .State.Health}}' "$(sudo docker compose ps -q "$svc")" 2>/dev/null | jq -e '.Status=="healthy"' >/dev/null 2>&1; then
+        echo "✅ $svc healthy"
+        return 0
+      fi
+      # sinon, running suffit
+      echo "✅ $svc en cours d'exécution"
+      return 0
+    fi
+    sleep 2
+    retries=$((retries-1))
+  done
+  echo "⚠️ Timeout d'attente pour $svc"
+  return 1
+}
+
+
+echo "✅ rDrive est lancé via docker-compose unique."
+echo "   Frontend accessible (par défaut) sur http://localhost:3010"
 
 echo ""
 echo "======================================================"
