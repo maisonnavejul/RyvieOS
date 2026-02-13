@@ -1797,6 +1797,13 @@ else
   echo -e "\033[0;32m✅ \033[0mToutes les apps ont été installées avec succès !"
 fi
 
+# --- Correction des permissions post-installation ---
+# Le worker tourne en root via ce script, mais le backend tourne en tant que $EXEC_USER.
+# Sans ce chown, le backend ne peut pas lire les manifests (EACCES).
+echo -e "\033[0;34mℹ️  \033[0mCorrection des permissions des manifests et apps..."
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$CONFIG_DIR/manifests" 2>/dev/null || true
+sudo chown -R "$EXEC_USER:$EXEC_USER" "$APPS_DIR" 2>/dev/null || true
+
 echo ""
 echo "======================================================"
 echo "🧪 Tests de permissions (optionnel)"
