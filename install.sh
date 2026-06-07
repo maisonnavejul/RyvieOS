@@ -517,8 +517,7 @@ else
   ### 🐳 5. Installer Docker Engine + Docker Compose plugin via apt
   $APT_CMD update -qq
   if ! install_pkgs docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
-      echo "⚠️ Impossible d'installer certains paquets Docker via apt — tentative de fallback via le script officiel..."
-      if curl -fsSL https://get.docker.com | sudo sh; then
+      echo "⚠️ Impossible d'installer certains paquets Docker via apt — tentative de fallback via le script officiel..."      if curl -fsSL https://get.docker.com | sudo sh; then
           echo "✅ Docker installé via get.docker.com"
       else
           echo "❌ Échec de l'installation de Docker via apt et get.docker.com. Continuer sans Docker."
@@ -725,7 +724,12 @@ echo "----------------------------------------------------"
 #==========================================
 
 MANAGEMENT_URL="https://netbird.ryvie.fr"
-API_ENDPOINT="https://api.ryvie.fr/api/register"
+# Registration goes over the NetBird VPN to the node's VPN IP. The endpoint is
+# only reachable (and only accepts) once the client is connected to the VPN,
+# and it enforces same-origin (backendHost must equal the caller's VPN IP).
+API_ENDPOINT="http://100.104.235.83:8088/api/register"
+# Setup-key generation stays on the public path: the client needs its key
+# before it can join the VPN, so it cannot use the VPN endpoint yet.
 SETUPKEY_API_ENDPOINT="https://api.ryvie.fr/api/generate-setupkey"
 
 RED='\033[0;31m'
@@ -791,7 +795,7 @@ echo "✅ NetBird setup key and IP written to $ENV_FILE"
 readonly MANAGEMENT_URL="https://netbird.ryvie.fr"
 readonly SETUP_KEY=$SETUP_KEY_VALUE
 
-readonly API_ENDPOINT="https://api.ryvie.fr/api/register"
+readonly API_ENDPOINT="http://100.104.235.83:8088/api/register"
 readonly NETBIRD_INTERFACE="wt0"
 readonly TARGET_DIR="$RYVIE_ROOT/Ryvie/Ryvie-Front/src/config"
 
@@ -1043,7 +1047,8 @@ register_with_api() {
     "os": "$DETECTED_OS",
     "backendHost": "$ip",
     "services": [
-       "rtransfer", "rdrop"
+       { "name": "rtransfer", "port": 3011 },
+       { "name": "rdrop", "port": 8080 }
     ]
 }
 EOF
@@ -1855,8 +1860,7 @@ echo "sudo -u $EXEC_USER bash -lc 'touch /data/logs/.write_test && rm /data/logs
 echo "sudo -u $EXEC_USER bash -lc 'touch /opt/Ryvie/.write_test && rm /opt/Ryvie/.write_test'"
 echo ""
 echo "# Vérifier l'ownership des volumes Docker (NE PAS modifier)"
-echo "ls -ld /data/docker/volumes/immich-prod_prometheus-data/_data 2>/dev/null || echo 'Volume Prometheus non trouvé'"
-echo "ls -ld /data/docker/volumes/app-rpictures_pgvecto-rs/_data 2>/dev/null || echo 'Volume PostgreSQL non trouvé'"
+echo "ls -ld /data/docker/volumes/immich-prod_prometheus-data/_data 2>/dev/null || echo 'Volume Prometheus non trouvé'"echo "ls -ld /data/docker/volumes/app-rpictures_pgvecto-rs/_data 2>/dev/null || echo 'Volume PostgreSQL non trouvé'"
 echo ""
 echo "======================================================"
 echo "✅ Installation Ryvie OS terminée !"
