@@ -517,8 +517,7 @@ else
   ### 🐳 5. Installer Docker Engine + Docker Compose plugin via apt
   $APT_CMD update -qq
   if ! install_pkgs docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
-      echo "⚠️ Impossible d'installer certains paquets Docker via apt — tentative de fallback via le script officiel..."
-      if curl -fsSL https://get.docker.com | sudo sh; then
+      echo "⚠️ Impossible d'installer certains paquets Docker via apt — tentative de fallback via le script officiel..."      if curl -fsSL https://get.docker.com | sudo sh; then
           echo "✅ Docker installé via get.docker.com"
       else
           echo "❌ Échec de l'installation de Docker via apt et get.docker.com. Continuer sans Docker."
@@ -572,6 +571,16 @@ sudo sed -i '1i root = "'"$CONTAINERD_ROOT"'"' /etc/containerd/config.toml
 # Optionnel: déplacer aussi le state (volatile). On laisse par défaut /run/containerd.
 # sudo sed -i 's#^\s*state\s*=\s*".*"#state = "/run/containerd"#' /etc/containerd/config.toml
 
+# Créer /data/containerd comme sous-volume BTRFS
+if [ "$CONTAINERD_ROOT" = "/data/containerd" ] && findmnt -f /data | grep -q btrfs; then
+  if [ ! -d "/data/containerd" ]; then
+    echo "Création de /data/containerd comme sous-volume BTRFS..."
+    sudo btrfs subvolume create /data/containerd || sudo mkdir -p /data/containerd
+  fi
+else
+  sudo mkdir -p "$CONTAINERD_ROOT"
+fi
+
 # Migrer l’ancien contenu s’il existe
 if [ -d /var/lib/containerd ] && [ "$CONTAINERD_ROOT" != "/var/lib/containerd" ]; then
   echo "Migration de /var/lib/containerd vers $CONTAINERD_ROOT…"
@@ -593,6 +602,17 @@ fi
 echo "Configuration de Docker (data-root=${DOCKER_ROOT})…"
 # Mettre à jour /etc/docker/daemon.json de manière fiable sans dépendre de variables d'env dans un sous-shell sudo
 sudo mkdir -p /etc/docker
+
+# Créer /data/docker comme sous-volume BTRFS si possible pour faciliter l'exclusion
+if [ "$DOCKER_ROOT" = "/data/docker" ] && findmnt -f /data | grep -q btrfs; then
+  if [ ! -d "/data/docker" ]; then
+    echo "Création de /data/docker comme sous-volume BTRFS..."
+    sudo btrfs subvolume create /data/docker || sudo mkdir -p /data/docker
+  fi
+else
+  sudo mkdir -p "$DOCKER_ROOT"
+fi
+
 tmp_daemon=$(mktemp)
 if [ -f /etc/docker/daemon.json ]; then
   # Utiliser jq pour forcer la clé "data-root". En cas d'échec de jq, on écrit un JSON minimal.
@@ -704,7 +724,12 @@ echo "----------------------------------------------------"
 #==========================================
 
 MANAGEMENT_URL="https://netbird.ryvie.fr"
-API_ENDPOINT="https://api.ryvie.fr/api/register"
+# Registration goes over the NetBird VPN to the node's VPN IP. The endpoint is
+# only reachable (and only accepts) once the client is connected to the VPN,
+# and it enforces same-origin (backendHost must equal the caller's VPN IP).
+API_ENDPOINT="http://100.104.235.83:8088/api/register"
+# Setup-key generation stays on the public path: the client needs its key
+# before it can join the VPN, so it cannot use the VPN endpoint yet.
 SETUPKEY_API_ENDPOINT="https://api.ryvie.fr/api/generate-setupkey"
 
 RED='\033[0;31m'
@@ -770,7 +795,7 @@ echo "✅ NetBird setup key and IP written to $ENV_FILE"
 readonly MANAGEMENT_URL="https://netbird.ryvie.fr"
 readonly SETUP_KEY=$SETUP_KEY_VALUE
 
-readonly API_ENDPOINT="https://api.ryvie.fr/api/register"
+readonly API_ENDPOINT="http://100.104.235.83:8088/api/register"
 readonly NETBIRD_INTERFACE="wt0"
 readonly TARGET_DIR="$RYVIE_ROOT/Ryvie/Ryvie-Front/src/config"
 
@@ -1022,7 +1047,8 @@ register_with_api() {
     "os": "$DETECTED_OS",
     "backendHost": "$ip",
     "services": [
-       "rtransfer", "rdrop"
+       { "name": "rtransfer", "port": 3011 },
+       { "name": "rdrop", "port": 8080 }
     ]
 }
 EOF
@@ -1355,23 +1381,31 @@ echo ""
   
 # Si Docker absent, sauter Portainer
 if command -v docker > /dev/null 2>&1; then
-  # Lancer Portainer uniquement s'il n'existe pas déjà
-  if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^portainer$'; then
-    sudo mkdir -p "$DATA_ROOT/portainer"
-    sudo docker run -d \
-      --name portainer \
-      --restart=always \
-      -p 8000:8000 \
-      -p 9443:9443 \
-      -v /var/run/docker.sock:/var/run/docker.sock \
-      -v "$DATA_ROOT/portainer":/data \
-      portainer/portainer-ce:latest
-  else
-    echo "Portainer existe déjà. Vérification de l'état..."
-    if ! sudo docker ps --format '{{.Names}}' | grep -q '^portainer$'; then
-      sudo docker start portainer
-    fi
-  fi
+  # Installer et versionner Portainer sous forme de compose
+  PORTAINER_DIR="$DATA_ROOT/config/portainer"
+  sudo mkdir -p "$PORTAINER_DIR"
+  sudo mkdir -p "$DATA_ROOT/portainer"
+  
+  cat <<EOF > /tmp/portainer-compose.yml
+version: '3.8'
+
+services:
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    restart: always
+    ports:
+      - "8000:8000"
+      - "9443:9443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - $DATA_ROOT/portainer:/data
+EOF
+  sudo mv /tmp/portainer-compose.yml "$PORTAINER_DIR/docker-compose.yml"
+  
+  # Lancer Portainer uniquement s'il n'existe pas déjà via Compose
+  cd "$PORTAINER_DIR"
+  sudo docker compose up -d
 else
   echo "⚠️ Portainer ignoré : Docker non installé."
 fi
@@ -1396,7 +1430,18 @@ LDAP_DIR="$CONFIG_DIR/ldap"
 mkdir -p "$LDAP_DIR"
 cd "$LDAP_DIR"
 
-# 2. Créer le fichier docker-compose.yml pour lancer OpenLDAP avec le mot de passe généré
+# 2. Créer le répertoire persistant pour les données LDAP (bind mount)
+mkdir -p "$LDAP_DIR/data"
+
+# 2.b Créer les réseaux externes s'ils n'existent pas
+for net in ryvie-network ldap_my_custom_network; do
+  if ! sudo docker network ls --format '{{.Name}}' | grep -qx "$net"; then
+    echo "Création du réseau externe docker: $net"
+    sudo docker network create "$net" || true
+  fi
+done
+
+# 2.c Créer le fichier docker-compose.yml pour lancer OpenLDAP avec le mot de passe généré
 cat > docker-compose.yml <<EOF
 version: '3.8'
 
@@ -1409,23 +1454,20 @@ services:
       - LDAP_ADMIN_PASSWORD=$LDAP_ADMIN_PASSWORD
       - LDAP_ROOT=dc=example,dc=org
     ports:
-      - "389:1389"  # Port LDAP
-      - "636:1636"  # Port LDAP sécurisé
+      - "389:1389"
+      - "636:1636"
     networks:
-      my_custom_network:
+      - ldap_my_custom_network
+      - ryvie-network
     volumes:
-      - openldap_data:/bitnami/openldap
+      - /data/config/ldap/data:/bitnami/openldap
     restart: unless-stopped
 
-volumes:
-  openldap_data:
-
 networks:
-  my_custom_network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/24
+  ldap_my_custom_network:
+    external: true
+  ryvie-network:
+    external: true
 EOF
 
 # 3. Lancer le conteneur OpenLDAP
@@ -1818,8 +1860,7 @@ echo "sudo -u $EXEC_USER bash -lc 'touch /data/logs/.write_test && rm /data/logs
 echo "sudo -u $EXEC_USER bash -lc 'touch /opt/Ryvie/.write_test && rm /opt/Ryvie/.write_test'"
 echo ""
 echo "# Vérifier l'ownership des volumes Docker (NE PAS modifier)"
-echo "ls -ld /data/docker/volumes/immich-prod_prometheus-data/_data 2>/dev/null || echo 'Volume Prometheus non trouvé'"
-echo "ls -ld /data/docker/volumes/app-rpictures_pgvecto-rs/_data 2>/dev/null || echo 'Volume PostgreSQL non trouvé'"
+echo "ls -ld /data/docker/volumes/immich-prod_prometheus-data/_data 2>/dev/null || echo 'Volume Prometheus non trouvé'"echo "ls -ld /data/docker/volumes/app-rpictures_pgvecto-rs/_data 2>/dev/null || echo 'Volume PostgreSQL non trouvé'"
 echo ""
 echo "======================================================"
 echo "✅ Installation Ryvie OS terminée !"
