@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+# =====================================================
+# Ryvie OS — installeur.
+# DOIT tourner en root. Si lancé sans sudo, on se relance automatiquement
+# via sudo en PRÉSERVANT l'utilisateur applicatif (par défaut 'ryvie'),
+# sinon les opérations sur /data (possédé par l'utilisateur applicatif)
+# échouent en « Permission denied » et NetBird exige root.
+# =====================================================
+if [ "$(id -u)" -ne 0 ]; then
+    # Déterminer l'utilisateur applicatif AVANT de perdre le contexte
+    # (sudo va redéfinir SUDO_USER sur l'appelant courant).
+    _ryvie_user="${RYVIE_USER:-${SUDO_USER:-ryvie}}"
+    [ "$_ryvie_user" = "root" ] && _ryvie_user="ryvie"
+    echo "⚙️  Ce script doit tourner en root — relance via sudo (utilisateur applicatif: $_ryvie_user)…"
+    exec sudo RYVIE_USER="$_ryvie_user" bash "$0" "$@"
+fi
+
 # Détecter l’utilisateur réel même si le script est lancé avec sudo
 EXEC_USER="${SUDO_USER:-$USER}"
 EXEC_HOME="$(getent passwd "$EXEC_USER" | cut -d: -f6)"
@@ -20,7 +36,7 @@ echo "
 echo ""
 echo "Bienvenue sur Ryvie OS 🚀"
 echo "By Jules Maisonnave"
-echo "v0.0.14"
+echo "v0.0.1"
 
 # --- CHANGED: controlled strict mode for critical sections only ---
 # Not failing globally; provide helpers to enable strict mode for critical parts
@@ -51,7 +67,10 @@ VERSION_ID="${VERSION_ID:-}"
 # =====================================================
 # Sur un VPS fraîchement provisionné, l'utilisateur applicatif peut ne pas exister.
 # On le crée si besoin et on lui accorde sudo NOPASSWD (requis par Ryvie).
-RYVIE_USER="${RYVIE_USER:-${SUDO_USER:-ryvie}}"
+# Défaut STABLE = 'ryvie' (et non l'appelant sudo), pour que l'utilisateur
+# applicatif soit le même quelle que soit la façon de lancer le script.
+# Surchargeable explicitement via la variable d'environnement RYVIE_USER.
+RYVIE_USER="${RYVIE_USER:-ryvie}"
 if [ "$RYVIE_USER" = "root" ] || [ -z "$RYVIE_USER" ]; then
     RYVIE_USER="ryvie"
 fi
@@ -643,12 +662,11 @@ else
   ### 🐳 3. Ajouter la clé GPG officielle de Docker (écrase sans prompt)
   sudo mkdir -p /etc/apt/keyrings
   sudo rm -f /etc/apt/keyrings/docker.gpg
-  curl -fsSL "https://download.docker.com/linux/$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )/gpg" | \
-      sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  curl -fsSL "https://download.docker.com/linux/$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )/gpg" | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
   ### 🐳 4. Ajouter le dépôt Docker (choix debian/ubuntu)
   DOCKER_DISTRO=$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} ${DISTRO_CODENAME} stable" | \      sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} ${DISTRO_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
   ### 🐳 5. Installer Docker Engine + Docker Compose plugin via apt
   $APT_CMD update -qq
@@ -1135,10 +1153,41 @@ get_netbird_ip() {
 # API REGISTRATION FUNCTIONS
 #==========================================
 
+# Port du service register (nœud cloud NetBird), joignable UNIQUEMENT via le VPN.
+REGISTER_PORT="${REGISTER_PORT:-8088}"
+
+# Découvre l'URL du service register en sondant les peers NetBird sur :8088.
+# L'ancienne URL publique https://api.ryvie.fr/api/register est refusée
+# (not_on_vpn) : le register n'accepte que les requêtes venant du tunnel.
+# Miroir de Ryvie-Back publicExposureService.getRegisterUrl().
+# Override : export NETBIRD_REGISTER_URL=http://<ip>:8088
+discover_register_url() {
+    if [ -n "${NETBIRD_REGISTER_URL:-}" ]; then
+        printf '%s' "${NETBIRD_REGISTER_URL%/}"
+        return 0
+    fi
+    local status ips ip
+    status=$(sudo netbird status -d 2>/dev/null || netbird status -d 2>/dev/null || true)
+    # Préférer les peers "Connected" ; sinon retomber sur tous les peers listés.
+    ips=$(printf '%s\n' "$status" | awk '
+        /NetBird IP:/ { ip=$3 }
+        /Status: Connected/ { if (ip != "") { print ip; ip="" } }
+    ')
+    [ -z "$ips" ] && ips=$(printf '%s\n' "$status" | grep -oE 'NetBird IP: [0-9.]+' | awk '{print $3}')
+    for ip in $ips; do
+        # N'importe quelle réponse HTTP (même 404) => le service register est là.
+        if curl -s -o /dev/null --max-time 3 "http://${ip}:${REGISTER_PORT}/" 2>/dev/null; then
+            printf 'http://%s:%s' "$ip" "$REGISTER_PORT"
+            return 0
+        fi
+    done
+    return 1
+}
+
 register_with_api() {
     log_info "Registering with API..."
 
-    local ip machine_id response http_code body
+    local ip machine_id response http_code body register_base register_url
     
     ip=$(get_interface_ip "$NETBIRD_INTERFACE")
     if [ -z "$ip" ]; then
@@ -1164,10 +1213,19 @@ register_with_api() {
 EOF
 )
 
+    # Découvrir le service register sur le VPN (peer NetBird sur :8088)
+    register_base=$(discover_register_url) || {
+        log_error "Service register introuvable : aucun peer NetBird ne répond sur :${REGISTER_PORT}."
+        log_error "Vérifie que la policy NetBird autorise cette box à joindre le nœud register."
+        exit 1
+    }
+    register_url="${register_base}/api/register"
+    log_info "Register endpoint (via VPN): $register_url"
+
     # Make API request (sauvegarde sous /data/config/netbird)
     mkdir -p "$CONFIG_DIR/netbird"
     local netbird_tmp="$CONFIG_DIR/netbird/netbird_data"
-    response=$(curl -s -w "%{http_code}" -o "$netbird_tmp" -X POST "$API_ENDPOINT" \
+    response=$(curl -s -w "%{http_code}" -o "$netbird_tmp" -X POST "$register_url" \
         -H "Content-Type: application/json" \
         -d "$json_payload")
 
