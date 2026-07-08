@@ -20,7 +20,7 @@ echo "
 echo ""
 echo "Bienvenue sur Ryvie OS 🚀"
 echo "By Jules Maisonnave"
-echo "v0.0.1"
+echo "v0.0.14"
 
 # --- CHANGED: controlled strict mode for critical sections only ---
 # Not failing globally; provide helpers to enable strict mode for critical parts
