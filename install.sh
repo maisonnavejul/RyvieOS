@@ -1028,8 +1028,9 @@ persist_netbird_data() {
     # Créer le lien symbolique vers /data
     sudo ln -s "$dst" "$src" 2>/dev/null || true
 
-    # Redémarrer si le service existe
+    # Activer + redémarrer si le service existe (garantit la persistance au reboot)
     if systemctl list-unit-files 2>/dev/null | grep -q '^netbird\.service'; then
+        sudo systemctl enable netbird 2>/dev/null || true
         sudo systemctl start netbird 2>/dev/null || true
     fi
 
