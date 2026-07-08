@@ -91,24 +91,88 @@ RYVIE_ROOT="/opt"
 IMAGES_DIR="$DATA_ROOT/images"
 USERPREF_DIR="$CONFIG_DIR/user-preferences"
 
-# --- Détection du mode de stockage : appliance (Btrfs /data dédié) vs VM/VPS (disque simple) ---
+# =====================================================
+# /data DOIT être en Btrfs — pas de mode dégradé.
+# Si /data n'est pas un volume Btrfs (VPS, VM), on crée une
+# image loopback Btrfs (/data.img) montée sur /data.
+# =====================================================
 DATA_FSTYPE="$(findmnt -no FSTYPE "$DATA_ROOT" 2>/dev/null || true)"
+DATA_IMG="/data.img"
+
 if [ "$DATA_FSTYPE" = "btrfs" ]; then
-  BTRFS_MODE=1
+  echo "🧱 $DATA_ROOT est déjà un volume Btrfs."
+elif [ -n "$DATA_FSTYPE" ]; then
+  # /data est monté mais sur un autre filesystem → on refuse (Btrfs requis)
+  echo "❌ $DATA_ROOT est monté en '$DATA_FSTYPE' (Btrfs requis)."
+  echo "   Démontez ou migrez ce volume vers Btrfs, puis relancez l'installation."
+  exit 1
 else
-  BTRFS_MODE=0
+  echo "💽 $DATA_ROOT n'est pas un volume Btrfs → création d'une image loopback Btrfs ($DATA_IMG)."
+
+  # --- Pré-requis : btrfs-progs + module noyau btrfs (fail-fast si indisponible, ex: OpenVZ/LXC) ---
+  if ! command -v mkfs.btrfs >/dev/null 2>&1; then
+    echo "⚙️ Installation de btrfs-progs..."
+    export DEBIAN_FRONTEND=noninteractive
+    sudo apt-get update -qq || true
+    sudo apt-get install -y btrfs-progs || { echo "❌ Impossible d'installer btrfs-progs"; exit 1; }
+  fi
+  if ! sudo modprobe btrfs 2>/dev/null && ! grep -qw btrfs /proc/filesystems; then
+    echo "❌ Le noyau de cette machine ne supporte pas Btrfs (hébergeur OpenVZ/LXC ?)."
+    echo "   Ryvie nécessite un vrai noyau Linux avec Btrfs (VPS KVM, VM ou machine physique)."
+    exit 1
+  fi
+
+  # --- Dimensionnement : espace libre sur / moins 5 Go de marge (minimum 8 Go) ---
+  FREE_KB=$(df -k --output=avail / | tail -1 | tr -d ' ')
+  FREE_GB=$(( FREE_KB / 1024 / 1024 ))
+  IMG_GB=$(( FREE_GB - 5 ))
+  if [ "$IMG_GB" -lt 8 ]; then
+    echo "❌ Espace disque insuffisant pour créer $DATA_IMG (${FREE_GB} Go libres, minimum requis: 13 Go)."
+    exit 1
+  fi
+
+  # --- Création de l'image sparse (idempotent : on réutilise une image Btrfs existante) ---
+  if [ -f "$DATA_IMG" ] && [ "$(sudo blkid -o value -s TYPE "$DATA_IMG" 2>/dev/null)" = "btrfs" ]; then
+    echo "✅ Image Btrfs existante détectée : $DATA_IMG (réutilisation)."
+  else
+    echo "📦 Création de l'image sparse ${IMG_GB}G : $DATA_IMG"
+    sudo truncate -s "${IMG_GB}G" "$DATA_IMG"
+    sudo mkfs.btrfs -q -f -L DATA "$DATA_IMG" || { echo "❌ mkfs.btrfs a échoué"; exit 1; }
+  fi
+  sudo chmod 600 "$DATA_IMG"
+
+  # --- Préserver un éventuel contenu existant de /data (répertoire simple) ---
+  OLD_DATA=""
+  if [ -d "$DATA_ROOT" ] && [ -n "$(ls -A "$DATA_ROOT" 2>/dev/null)" ]; then
+    OLD_DATA="/data.pre-btrfs.$(date +%s)"
+    echo "📦 Contenu existant détecté dans $DATA_ROOT → sauvegarde vers $OLD_DATA"
+    sudo mv "$DATA_ROOT" "$OLD_DATA"
+  fi
+  sudo mkdir -p "$DATA_ROOT"
+
+  # --- Montage persistant via fstab ---
+  if ! grep -qE "^[^#]*[[:space:]]${DATA_ROOT}[[:space:]]+btrfs" /etc/fstab; then
+    echo "$DATA_IMG $DATA_ROOT btrfs loop,compress=zstd:3,noatime 0 0" | sudo tee -a /etc/fstab >/dev/null
+  fi
+  sudo systemctl daemon-reload 2>/dev/null || true
+  sudo mount "$DATA_ROOT" || { echo "❌ Impossible de monter $DATA_IMG sur $DATA_ROOT (support loop indisponible ?)"; exit 1; }
+
+  if [ "$(findmnt -no FSTYPE "$DATA_ROOT" 2>/dev/null)" != "btrfs" ]; then
+    echo "❌ $DATA_ROOT n'est pas monté en Btrfs après le montage. Abandon."
+    exit 1
+  fi
+  echo "✅ $DATA_ROOT monté en Btrfs (image loopback $DATA_IMG)."
+
+  # --- Réimporter l'ancien contenu si présent ---
+  if [ -n "$OLD_DATA" ]; then
+    echo "📥 Migration du contenu de $OLD_DATA vers $DATA_ROOT..."
+    sudo cp -a "$OLD_DATA"/. "$DATA_ROOT"/ && sudo rm -rf "$OLD_DATA"
+  fi
 fi
 
-# Emplacement de Docker & containerd :
-#  - Machine physique / appliance (Btrfs) : sur /data (séparation OS/Data, sous-volumes)
-#  - VM / VPS (disque simple)             : sur / (/var/lib, défaut système)
-if [ "$BTRFS_MODE" -eq 1 ]; then
-  DOCKER_ROOT="${DOCKER_ROOT:-$DATA_ROOT/docker}"
-  CONTAINERD_ROOT="${CONTAINERD_ROOT:-$DATA_ROOT/containerd}"
-else
-  DOCKER_ROOT="${DOCKER_ROOT:-/var/lib/docker}"
-  CONTAINERD_ROOT="${CONTAINERD_ROOT:-/var/lib/containerd}"
-fi
+# Emplacement de Docker & containerd : toujours sur /data (séparation OS/Data, sous-volumes)
+DOCKER_ROOT="${DOCKER_ROOT:-$DATA_ROOT/docker}"
+CONTAINERD_ROOT="${CONTAINERD_ROOT:-$DATA_ROOT/containerd}"
 
 sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$RYVIE_ROOT" "$IMAGES_DIR/backgrounds" "$USERPREF_DIR" "$DATA_ROOT/snapshot"
 
@@ -137,45 +201,55 @@ get_work_dir() {
 }
 
 # =====================================================
-# Mode de stockage (déjà détecté plus haut : BTRFS_MODE)
+# Mode de stockage : /data est toujours en Btrfs à ce stade.
+# On persiste le mode pour l'UI (gestion RAID uniquement sur machine physique).
 # =====================================================
-if [ "$BTRFS_MODE" -eq 1 ]; then
-  echo "🧱 Mode appliance : $DATA_ROOT est en Btrfs → Docker/containerd sur $DATA_ROOT (sous-volumes + snapshots activés)."
+sudo mkdir -p "$CONFIG_DIR/system"
+DATA_SRC="$(findmnt -no SOURCE "$DATA_ROOT" 2>/dev/null || true)"
+if [[ "$DATA_SRC" == /dev/md* ]]; then
+  # RAID mdadm existant → appliance, même dans une VM (ex: box de dev)
+  STORAGE_MODE="appliance"
+  echo "🧱 Mode appliance : $DATA_ROOT en Btrfs sur RAID ($DATA_SRC) → snapshots + gestion RAID activés."
+elif [[ "$DATA_SRC" == /dev/loop* ]] || systemd-detect-virt --quiet 2>/dev/null; then
+  STORAGE_MODE="vps"
+  echo "💽 Mode VPS/VM : $DATA_ROOT en Btrfs (source: $DATA_SRC) → snapshots activés, gestion RAID désactivée."
 else
-  echo "💽 Mode VM/VPS : $DATA_ROOT n'est pas un volume Btrfs dédié → Docker/containerd sur /var/lib, dossiers simples, snapshots désactivés."
+  STORAGE_MODE="appliance"
+  echo "🧱 Mode appliance : $DATA_ROOT en Btrfs (source: $DATA_SRC) → snapshots + gestion RAID activés."
 fi
+echo "$STORAGE_MODE" | sudo tee "$CONFIG_DIR/system/storage-mode" >/dev/null
+sudo chown "$EXEC_USER:$EXEC_USER" "$CONFIG_DIR/system/storage-mode" 2>/dev/null || true
 
 echo "----------------------------------------------------"
 echo "Étape 0: Préparation des répertoires de données"
 echo "----------------------------------------------------"
-if [ "$BTRFS_MODE" -eq 1 ]; then
-  # En mode appliance, /data/docker doit exister pour être converti en sous-volume Btrfs
-  sudo mkdir -p "$DOCKER_ROOT"
-  # --- Convertir les répertoires clés en sous-volumes Btrfs (idempotent) ---
-  for dir in "$APPS_DIR" "$CONFIG_DIR" "$DOCKER_ROOT" "$LOG_DIR" "$IMAGES_DIR" "$DATA_ROOT/netbird"; do
-    if [[ -d "$dir" ]]; then
-      if ! sudo btrfs subvolume show "$dir" &>/dev/null; then
-        echo "🧱 Création du sous-volume Btrfs : $dir"
-        TMP="${dir}.tmp-$$"
-        sudo mv "$dir" "$TMP"
-        sudo btrfs subvolume create "$dir"
-        sudo cp -a --reflink=always "$TMP"/. "$dir"/
-        sudo rm -rf "$TMP"
-      else
-        echo "✅ $dir est déjà un sous-volume"
-      fi
-    fi
-  done
-
-  # Dossier snapshot isolé (ne sera jamais inclus dans les snapshots)
-  if [[ ! -d "$DATA_ROOT/snapshot" ]] || ! sudo btrfs subvolume show "$DATA_ROOT/snapshot" &>/dev/null; then
-    sudo btrfs subvolume create "$DATA_ROOT/snapshot"
-    echo "📦 Sous-volume snapshot créé : $DATA_ROOT/snapshot"
+# /data/docker doit exister pour être converti en sous-volume Btrfs
+sudo mkdir -p "$DOCKER_ROOT"
+# --- Convertir/créer les répertoires clés en sous-volumes Btrfs (idempotent) ---
+# NB: on inclut netbird ici même s'il est peuplé plus tard (étape NetBird) : il
+# doit être un sous-volume pour être snapshoté par la sauvegarde (ryvie-backup.sh).
+for dir in "$APPS_DIR" "$CONFIG_DIR" "$DOCKER_ROOT" "$LOG_DIR" "$IMAGES_DIR" "$DATA_ROOT/netbird"; do
+  if sudo btrfs subvolume show "$dir" &>/dev/null; then
+    echo "✅ $dir est déjà un sous-volume"
+  elif [[ -d "$dir" ]]; then
+    # Dossier simple existant → conversion en sous-volume
+    echo "🧱 Conversion en sous-volume Btrfs : $dir"
+    TMP="${dir}.tmp-$$"
+    sudo mv "$dir" "$TMP"
+    sudo btrfs subvolume create "$dir"
+    sudo cp -a --reflink=always "$TMP"/. "$dir"/
+    sudo rm -rf "$TMP"
+  else
+    # N'existe pas encore (ex: netbird) → sous-volume neuf
+    echo "🧱 Création du sous-volume Btrfs : $dir"
+    sudo btrfs subvolume create "$dir"
   fi
-else
-  # Mode VPS : /data est un simple dossier sur la partition racine, pas de sous-volumes
-  sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$IMAGES_DIR" "$DATA_ROOT/netbird" "$DATA_ROOT/snapshot"
-  echo "✅ Répertoires /data créés (dossiers simples, sans Btrfs)."
+done
+
+# Dossier snapshot isolé (ne sera jamais inclus dans les snapshots)
+if [[ ! -d "$DATA_ROOT/snapshot" ]] || ! sudo btrfs subvolume show "$DATA_ROOT/snapshot" &>/dev/null; then
+  sudo btrfs subvolume create "$DATA_ROOT/snapshot"
+  echo "📦 Sous-volume snapshot créé : $DATA_ROOT/snapshot"
 fi
 
 
@@ -537,7 +611,7 @@ echo "Etape 3: Vérification des dépendances (mode strict pour cette section)"
 echo "----------------------------------------------------"
 # Activer le comportement "exit on error" uniquement pour l'installation des dépendances
 strict_enter
-install_pkgs gdisk parted build-essential python3 make g++ ldap-utils
+install_pkgs gdisk parted build-essential python3 make g++ ldap-utils btrfs-progs
 # Vérifier le code de retour de npm install (strict mode assure l'arrêt si npm install échoue)
 echo ""
 echo "Tous les modules ont été installés avec succès."
@@ -1431,6 +1505,12 @@ LDAP_DIR="$CONFIG_DIR/ldap"
 mkdir -p "$LDAP_DIR"
 cd "$LDAP_DIR"
 
+# Les données OpenLDAP sont stockées en BIND MOUNT sous /data/config/ldap/data
+# (et non dans un volume Docker nommé) afin qu'elles vivent dans /data/config,
+# donc incluses dans les sauvegardes (ryvie-backup.sh) et migrables. C'est aussi
+# ce que le backend impose au runtime (architectureService.ts).
+sudo mkdir -p "$LDAP_DIR/data"
+
 # 2. Créer le fichier docker-compose.yml pour lancer OpenLDAP avec le mot de passe généré
 cat > docker-compose.yml <<EOF
 version: '3.8'
@@ -1449,11 +1529,8 @@ services:
     networks:
       my_custom_network:
     volumes:
-      - openldap_data:/bitnami/openldap
+      - $LDAP_DIR/data:/bitnami/openldap
     restart: unless-stopped
-
-volumes:
-  openldap_data:
 
 networks:
   my_custom_network:
