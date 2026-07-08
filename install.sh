@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+# =====================================================
+# Ryvie OS — installeur.
+# DOIT tourner en root. Si lancé sans sudo, on se relance automatiquement
+# via sudo en PRÉSERVANT l'utilisateur applicatif (par défaut 'ryvie'),
+# sinon les opérations sur /data (possédé par l'utilisateur applicatif)
+# échouent en « Permission denied » et NetBird exige root.
+# =====================================================
+if [ "$(id -u)" -ne 0 ]; then
+    # Déterminer l'utilisateur applicatif AVANT de perdre le contexte
+    # (sudo va redéfinir SUDO_USER sur l'appelant courant).
+    _ryvie_user="${RYVIE_USER:-${SUDO_USER:-ryvie}}"
+    [ "$_ryvie_user" = "root" ] && _ryvie_user="ryvie"
+    echo "⚙️  Ce script doit tourner en root — relance via sudo (utilisateur applicatif: $_ryvie_user)…"
+    exec sudo RYVIE_USER="$_ryvie_user" bash "$0" "$@"
+fi
+
 # Détecter l’utilisateur réel même si le script est lancé avec sudo
 EXEC_USER="${SUDO_USER:-$USER}"
 EXEC_HOME="$(getent passwd "$EXEC_USER" | cut -d: -f6)"
@@ -47,18 +63,137 @@ ID="${ID:-}"
 VERSION_ID="${VERSION_ID:-}"
 
 # =====================================================
+# Utilisateur applicatif Ryvie + sudo sans mot de passe (compat VPS)
+# =====================================================
+# Sur un VPS fraîchement provisionné, l'utilisateur applicatif peut ne pas exister.
+# On le crée si besoin et on lui accorde sudo NOPASSWD (requis par Ryvie).
+# Défaut STABLE = 'ryvie' (et non l'appelant sudo), pour que l'utilisateur
+# applicatif soit le même quelle que soit la façon de lancer le script.
+# Surchargeable explicitement via la variable d'environnement RYVIE_USER.
+RYVIE_USER="${RYVIE_USER:-ryvie}"
+if [ "$RYVIE_USER" = "root" ] || [ -z "$RYVIE_USER" ]; then
+    RYVIE_USER="ryvie"
+fi
+
+if ! id "$RYVIE_USER" >/dev/null 2>&1; then
+    echo "👤 Création de l'utilisateur applicatif '$RYVIE_USER'..."
+    sudo useradd -m -s /bin/bash "$RYVIE_USER" || { echo "❌ Échec de création de l'utilisateur $RYVIE_USER"; exit 1; }
+fi
+
+# Recalcule l'utilisateur/dossier d'exécution sur l'utilisateur applicatif
+EXEC_USER="$RYVIE_USER"
+EXEC_HOME="$(getent passwd "$EXEC_USER" | cut -d: -f6)"
+[ -z "$EXEC_HOME" ] && EXEC_HOME="/home/$EXEC_USER"
+
+# sudo sans mot de passe pour l'utilisateur applicatif
+SUDOERS_FILE="/etc/sudoers.d/$EXEC_USER"
+if [ ! -f "$SUDOERS_FILE" ]; then
+    echo "🔐 Configuration de sudo NOPASSWD pour '$EXEC_USER'..."
+    printf 'Defaults:%s !authenticate\n%s ALL=(ALL) NOPASSWD: ALL\n' "$EXEC_USER" "$EXEC_USER" | sudo tee "$SUDOERS_FILE" >/dev/null
+    sudo chmod 440 "$SUDOERS_FILE"
+    if ! sudo visudo -cf "$SUDOERS_FILE" >/dev/null 2>&1; then
+        echo "❌ Fichier sudoers invalide, suppression par sécurité."
+        sudo rm -f "$SUDOERS_FILE"
+    else
+        echo "✅ sudo NOPASSWD configuré pour '$EXEC_USER'."
+    fi
+fi
+
+# =====================================================
 # Global /data paths (strict OS/Data separation)
 # =====================================================
 DATA_ROOT="/data"
 APPS_DIR="$DATA_ROOT/apps"
 CONFIG_DIR="$DATA_ROOT/config"
 LOG_DIR="$DATA_ROOT/logs"
-DOCKER_ROOT="$DATA_ROOT/docker"
 RYVIE_ROOT="/opt"
 IMAGES_DIR="$DATA_ROOT/images"
 USERPREF_DIR="$CONFIG_DIR/user-preferences"
 
-sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DOCKER_ROOT" "$RYVIE_ROOT" "$IMAGES_DIR/backgrounds" "$USERPREF_DIR" "$DATA_ROOT/snapshot"
+# =====================================================
+# /data DOIT être en Btrfs — pas de mode dégradé.
+# Si /data n'est pas un volume Btrfs (VPS, VM), on crée une
+# image loopback Btrfs (/data.img) montée sur /data.
+# =====================================================
+DATA_FSTYPE="$(findmnt -no FSTYPE "$DATA_ROOT" 2>/dev/null || true)"
+DATA_IMG="/data.img"
+
+if [ "$DATA_FSTYPE" = "btrfs" ]; then
+  echo "🧱 $DATA_ROOT est déjà un volume Btrfs."
+elif [ -n "$DATA_FSTYPE" ]; then
+  # /data est monté mais sur un autre filesystem → on refuse (Btrfs requis)
+  echo "❌ $DATA_ROOT est monté en '$DATA_FSTYPE' (Btrfs requis)."
+  echo "   Démontez ou migrez ce volume vers Btrfs, puis relancez l'installation."
+  exit 1
+else
+  echo "💽 $DATA_ROOT n'est pas un volume Btrfs → création d'une image loopback Btrfs ($DATA_IMG)."
+
+  # --- Pré-requis : btrfs-progs + module noyau btrfs (fail-fast si indisponible, ex: OpenVZ/LXC) ---
+  if ! command -v mkfs.btrfs >/dev/null 2>&1; then
+    echo "⚙️ Installation de btrfs-progs..."
+    export DEBIAN_FRONTEND=noninteractive
+    sudo apt-get update -qq || true
+    sudo apt-get install -y btrfs-progs || { echo "❌ Impossible d'installer btrfs-progs"; exit 1; }
+  fi
+  if ! sudo modprobe btrfs 2>/dev/null && ! grep -qw btrfs /proc/filesystems; then
+    echo "❌ Le noyau de cette machine ne supporte pas Btrfs (hébergeur OpenVZ/LXC ?)."
+    echo "   Ryvie nécessite un vrai noyau Linux avec Btrfs (VPS KVM, VM ou machine physique)."
+    exit 1
+  fi
+
+  # --- Dimensionnement : espace libre sur / moins 5 Go de marge (minimum 8 Go) ---
+  FREE_KB=$(df -k --output=avail / | tail -1 | tr -d ' ')
+  FREE_GB=$(( FREE_KB / 1024 / 1024 ))
+  IMG_GB=$(( FREE_GB - 5 ))
+  if [ "$IMG_GB" -lt 8 ]; then
+    echo "❌ Espace disque insuffisant pour créer $DATA_IMG (${FREE_GB} Go libres, minimum requis: 13 Go)."
+    exit 1
+  fi
+
+  # --- Création de l'image sparse (idempotent : on réutilise une image Btrfs existante) ---
+  if [ -f "$DATA_IMG" ] && [ "$(sudo blkid -o value -s TYPE "$DATA_IMG" 2>/dev/null)" = "btrfs" ]; then
+    echo "✅ Image Btrfs existante détectée : $DATA_IMG (réutilisation)."
+  else
+    echo "📦 Création de l'image sparse ${IMG_GB}G : $DATA_IMG"
+    sudo truncate -s "${IMG_GB}G" "$DATA_IMG"
+    sudo mkfs.btrfs -q -f -L DATA "$DATA_IMG" || { echo "❌ mkfs.btrfs a échoué"; exit 1; }
+  fi
+  sudo chmod 600 "$DATA_IMG"
+
+  # --- Préserver un éventuel contenu existant de /data (répertoire simple) ---
+  OLD_DATA=""
+  if [ -d "$DATA_ROOT" ] && [ -n "$(ls -A "$DATA_ROOT" 2>/dev/null)" ]; then
+    OLD_DATA="/data.pre-btrfs.$(date +%s)"
+    echo "📦 Contenu existant détecté dans $DATA_ROOT → sauvegarde vers $OLD_DATA"
+    sudo mv "$DATA_ROOT" "$OLD_DATA"
+  fi
+  sudo mkdir -p "$DATA_ROOT"
+
+  # --- Montage persistant via fstab ---
+  if ! grep -qE "^[^#]*[[:space:]]${DATA_ROOT}[[:space:]]+btrfs" /etc/fstab; then
+    echo "$DATA_IMG $DATA_ROOT btrfs loop,compress=zstd:3,noatime 0 0" | sudo tee -a /etc/fstab >/dev/null
+  fi
+  sudo systemctl daemon-reload 2>/dev/null || true
+  sudo mount "$DATA_ROOT" || { echo "❌ Impossible de monter $DATA_IMG sur $DATA_ROOT (support loop indisponible ?)"; exit 1; }
+
+  if [ "$(findmnt -no FSTYPE "$DATA_ROOT" 2>/dev/null)" != "btrfs" ]; then
+    echo "❌ $DATA_ROOT n'est pas monté en Btrfs après le montage. Abandon."
+    exit 1
+  fi
+  echo "✅ $DATA_ROOT monté en Btrfs (image loopback $DATA_IMG)."
+
+  # --- Réimporter l'ancien contenu si présent ---
+  if [ -n "$OLD_DATA" ]; then
+    echo "📥 Migration du contenu de $OLD_DATA vers $DATA_ROOT..."
+    sudo cp -a "$OLD_DATA"/. "$DATA_ROOT"/ && sudo rm -rf "$OLD_DATA"
+  fi
+fi
+
+# Emplacement de Docker & containerd : toujours sur /data (séparation OS/Data, sous-volumes)
+DOCKER_ROOT="${DOCKER_ROOT:-$DATA_ROOT/docker}"
+CONTAINERD_ROOT="${CONTAINERD_ROOT:-$DATA_ROOT/containerd}"
+
+sudo mkdir -p "$APPS_DIR" "$CONFIG_DIR" "$LOG_DIR" "$RYVIE_ROOT" "$IMAGES_DIR/backgrounds" "$USERPREF_DIR" "$DATA_ROOT/snapshot"
 
 # Permissions sécurisées : NE JAMAIS chown -R sur DOCKER_ROOT pour éviter de casser les volumes
 # Seul le dossier racine /data (non récursif)
@@ -84,28 +219,49 @@ get_work_dir() {
     printf '%s' "$APPS_DIR"
 }
 
-#vérification que /data est bien BTRFS
-if [[ "$(findmnt -no FSTYPE "$DATA_ROOT")" != "btrfs" ]]; then
-  echo "❌ $DATA_ROOT n'est pas en Btrfs — impossible de créer des sous-volumes."
-  exit 1
+# =====================================================
+# Mode de stockage : /data est toujours en Btrfs à ce stade.
+# On persiste le mode pour l'UI (gestion RAID uniquement sur machine physique).
+# =====================================================
+sudo mkdir -p "$CONFIG_DIR/system"
+DATA_SRC="$(findmnt -no SOURCE "$DATA_ROOT" 2>/dev/null || true)"
+if [[ "$DATA_SRC" == /dev/md* ]]; then
+  # RAID mdadm existant → appliance, même dans une VM (ex: box de dev)
+  STORAGE_MODE="appliance"
+  echo "🧱 Mode appliance : $DATA_ROOT en Btrfs sur RAID ($DATA_SRC) → snapshots + gestion RAID activés."
+elif [[ "$DATA_SRC" == /dev/loop* ]] || systemd-detect-virt --quiet 2>/dev/null; then
+  STORAGE_MODE="vps"
+  echo "💽 Mode VPS/VM : $DATA_ROOT en Btrfs (source: $DATA_SRC) → snapshots activés, gestion RAID désactivée."
+else
+  STORAGE_MODE="appliance"
+  echo "🧱 Mode appliance : $DATA_ROOT en Btrfs (source: $DATA_SRC) → snapshots + gestion RAID activés."
 fi
+echo "$STORAGE_MODE" | sudo tee "$CONFIG_DIR/system/storage-mode" >/dev/null
+sudo chown "$EXEC_USER:$EXEC_USER" "$CONFIG_DIR/system/storage-mode" 2>/dev/null || true
 
 echo "----------------------------------------------------"
-echo "Étape 0: Création des sous-volumes BTRFS"
+echo "Étape 0: Préparation des répertoires de données"
 echo "----------------------------------------------------"
-# --- Convertir les répertoires clés en sous-volumes Btrfs (idempotent) ---
+# /data/docker doit exister pour être converti en sous-volume Btrfs
+sudo mkdir -p "$DOCKER_ROOT"
+# --- Convertir/créer les répertoires clés en sous-volumes Btrfs (idempotent) ---
+# NB: on inclut netbird ici même s'il est peuplé plus tard (étape NetBird) : il
+# doit être un sous-volume pour être snapshoté par la sauvegarde (ryvie-backup.sh).
 for dir in "$APPS_DIR" "$CONFIG_DIR" "$DOCKER_ROOT" "$LOG_DIR" "$IMAGES_DIR" "$DATA_ROOT/netbird"; do
-  if [[ -d "$dir" ]]; then
-    if ! sudo btrfs subvolume show "$dir" &>/dev/null; then
-      echo "🧱 Création du sous-volume Btrfs : $dir"
-      TMP="${dir}.tmp-$$"
-      sudo mv "$dir" "$TMP"
-      sudo btrfs subvolume create "$dir"
-      sudo cp -a --reflink=always "$TMP"/. "$dir"/
-      sudo rm -rf "$TMP"
-    else
-      echo "✅ $dir est déjà un sous-volume"
-    fi
+  if sudo btrfs subvolume show "$dir" &>/dev/null; then
+    echo "✅ $dir est déjà un sous-volume"
+  elif [[ -d "$dir" ]]; then
+    # Dossier simple existant → conversion en sous-volume
+    echo "🧱 Conversion en sous-volume Btrfs : $dir"
+    TMP="${dir}.tmp-$$"
+    sudo mv "$dir" "$TMP"
+    sudo btrfs subvolume create "$dir"
+    sudo cp -a --reflink=always "$TMP"/. "$dir"/
+    sudo rm -rf "$TMP"
+  else
+    # N'existe pas encore (ex: netbird) → sous-volume neuf
+    echo "🧱 Création du sous-volume Btrfs : $dir"
+    sudo btrfs subvolume create "$dir"
   fi
 done
 
@@ -426,7 +582,7 @@ fi
 echo "----------------------------------------------------"
 echo "Etape intermédiaire : augmentation des permissions"
 echo "----------------------------------------------------"
-sudo usermod -aG sudo ryvie
+sudo usermod -aG sudo "$EXEC_USER" || true
 
 # ⚠️ NE JAMAIS faire chown -R /data (casse les volumes Docker)
 # Les permissions sont déjà définies au début du script de manière ciblée
@@ -474,7 +630,7 @@ echo "Etape 3: Vérification des dépendances (mode strict pour cette section)"
 echo "----------------------------------------------------"
 # Activer le comportement "exit on error" uniquement pour l'installation des dépendances
 strict_enter
-install_pkgs gdisk parted build-essential python3 make g++ ldap-utils
+install_pkgs gdisk parted build-essential python3 make g++ ldap-utils btrfs-progs
 # Vérifier le code de retour de npm install (strict mode assure l'arrêt si npm install échoue)
 echo ""
 echo "Tous les modules ont été installés avec succès."
@@ -487,9 +643,9 @@ echo "Étape 4: Vérification et configuration Docker + containerd (mode strict)
 echo "----------------------------------------------------"
 strict_enter
 
-# Defaults si non définis
-: "${DOCKER_ROOT:=/data/docker}"
-: "${CONTAINERD_ROOT:=/data/containerd}"
+# Defaults si non définis (Docker/containerd sur la partition système /)
+: "${DOCKER_ROOT:=/var/lib/docker}"
+: "${CONTAINERD_ROOT:=/var/lib/containerd}"
 
 if command -v docker >/dev/null 2>&1; then
   echo "Docker est déjà installé : $(docker --version)"
@@ -506,13 +662,11 @@ else
   ### 🐳 3. Ajouter la clé GPG officielle de Docker (écrase sans prompt)
   sudo mkdir -p /etc/apt/keyrings
   sudo rm -f /etc/apt/keyrings/docker.gpg
-  curl -fsSL "https://download.docker.com/linux/$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )/gpg" | \
-      sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  curl -fsSL "https://download.docker.com/linux/$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )/gpg" | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
   ### 🐳 4. Ajouter le dépôt Docker (choix debian/ubuntu)
   DOCKER_DISTRO=$( [ "${ID:-}" = "debian" ] && echo "debian" || echo "ubuntu" )
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} ${DISTRO_CODENAME} stable" | \
-      sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} ${DISTRO_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
   ### 🐳 5. Installer Docker Engine + Docker Compose plugin via apt
   $APT_CMD update -qq
@@ -634,7 +788,7 @@ sudo docker run --rm hello-world || echo "⚠️ 'docker run hello-world' a éch
 
 # Groupe docker pour l’utilisateur (nécessite reconnexion pour effet)
 if getent group docker >/dev/null 2>&1; then
-  sudo usermod -aG docker ryvie || true
+  sudo usermod -aG docker "$EXEC_USER" || true
   echo "ℹ️ Déconnecte/reconnecte-toi (ou 'newgrp docker') pour activer l'appartenance au groupe docker."
 fi
 
@@ -874,8 +1028,9 @@ persist_netbird_data() {
     # Créer le lien symbolique vers /data
     sudo ln -s "$dst" "$src" 2>/dev/null || true
 
-    # Redémarrer si le service existe
+    # Activer + redémarrer si le service existe (garantit la persistance au reboot)
     if systemctl list-unit-files 2>/dev/null | grep -q '^netbird\.service'; then
+        sudo systemctl enable netbird 2>/dev/null || true
         sudo systemctl start netbird 2>/dev/null || true
     fi
 
@@ -999,10 +1154,41 @@ get_netbird_ip() {
 # API REGISTRATION FUNCTIONS
 #==========================================
 
+# Port du service register (nœud cloud NetBird), joignable UNIQUEMENT via le VPN.
+REGISTER_PORT="${REGISTER_PORT:-8088}"
+
+# Découvre l'URL du service register en sondant les peers NetBird sur :8088.
+# L'ancienne URL publique https://api.ryvie.fr/api/register est refusée
+# (not_on_vpn) : le register n'accepte que les requêtes venant du tunnel.
+# Miroir de Ryvie-Back publicExposureService.getRegisterUrl().
+# Override : export NETBIRD_REGISTER_URL=http://<ip>:8088
+discover_register_url() {
+    if [ -n "${NETBIRD_REGISTER_URL:-}" ]; then
+        printf '%s' "${NETBIRD_REGISTER_URL%/}"
+        return 0
+    fi
+    local status ips ip
+    status=$(sudo netbird status -d 2>/dev/null || netbird status -d 2>/dev/null || true)
+    # Préférer les peers "Connected" ; sinon retomber sur tous les peers listés.
+    ips=$(printf '%s\n' "$status" | awk '
+        /NetBird IP:/ { ip=$3 }
+        /Status: Connected/ { if (ip != "") { print ip; ip="" } }
+    ')
+    [ -z "$ips" ] && ips=$(printf '%s\n' "$status" | grep -oE 'NetBird IP: [0-9.]+' | awk '{print $3}')
+    for ip in $ips; do
+        # N'importe quelle réponse HTTP (même 404) => le service register est là.
+        if curl -s -o /dev/null --max-time 3 "http://${ip}:${REGISTER_PORT}/" 2>/dev/null; then
+            printf 'http://%s:%s' "$ip" "$REGISTER_PORT"
+            return 0
+        fi
+    done
+    return 1
+}
+
 register_with_api() {
     log_info "Registering with API..."
 
-    local ip machine_id response http_code body
+    local ip machine_id response http_code body register_base register_url
     
     ip=$(get_interface_ip "$NETBIRD_INTERFACE")
     if [ -z "$ip" ]; then
@@ -1028,10 +1214,19 @@ register_with_api() {
 EOF
 )
 
+    # Découvrir le service register sur le VPN (peer NetBird sur :8088)
+    register_base=$(discover_register_url) || {
+        log_error "Service register introuvable : aucun peer NetBird ne répond sur :${REGISTER_PORT}."
+        log_error "Vérifie que la policy NetBird autorise cette box à joindre le nœud register."
+        exit 1
+    }
+    register_url="${register_base}/api/register"
+    log_info "Register endpoint (via VPN): $register_url"
+
     # Make API request (sauvegarde sous /data/config/netbird)
     mkdir -p "$CONFIG_DIR/netbird"
     local netbird_tmp="$CONFIG_DIR/netbird/netbird_data"
-    response=$(curl -s -w "%{http_code}" -o "$netbird_tmp" -X POST "$API_ENDPOINT" \
+    response=$(curl -s -w "%{http_code}" -o "$netbird_tmp" -X POST "$register_url" \
         -H "Content-Type: application/json" \
         -d "$json_payload")
 
@@ -1286,7 +1481,7 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
-sudo chown ryvie:ryvie /data/config/netbird/.env
+sudo chown "$EXEC_USER:$EXEC_USER" "$CONFIG_DIR/netbird/.env" 2>/dev/null || true
 
 echo ""
 echo "----------------------------------------------------"
@@ -1349,35 +1544,8 @@ echo ""
      echo "⚠️ Docker n'est pas installé — saut de l'ajout de l'utilisateur au groupe docker."
  fi
 
-  echo "-----------------------------------------------------"
-  echo "Etape 8: Installation et démarrage de Portainer"
-  echo "-----------------------------------------------------"
-  
-# Si Docker absent, sauter Portainer
-if command -v docker > /dev/null 2>&1; then
-  # Lancer Portainer uniquement s'il n'existe pas déjà
-  if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^portainer$'; then
-    sudo mkdir -p "$DATA_ROOT/portainer"
-    sudo docker run -d \
-      --name portainer \
-      --restart=always \
-      -p 8000:8000 \
-      -p 9443:9443 \
-      -v /var/run/docker.sock:/var/run/docker.sock \
-      -v "$DATA_ROOT/portainer":/data \
-      portainer/portainer-ce:latest
-  else
-    echo "Portainer existe déjà. Vérification de l'état..."
-    if ! sudo docker ps --format '{{.Names}}' | grep -q '^portainer$'; then
-      sudo docker start portainer
-    fi
-  fi
-else
-  echo "⚠️ Portainer ignoré : Docker non installé."
-fi
-  
 echo "-----------------------------------------------------"
-echo "Etape 9: Ip du cloud Ryvie ryvie.local "
+echo "Etape 8: Ip du cloud Ryvie ryvie.local "
 echo "-----------------------------------------------------"
 
 # Installer avahi via la fonction d'installation (compatible Debian)
@@ -1395,6 +1563,12 @@ echo "-----------------------------------------------------"
 LDAP_DIR="$CONFIG_DIR/ldap"
 mkdir -p "$LDAP_DIR"
 cd "$LDAP_DIR"
+
+# Les données OpenLDAP sont stockées en BIND MOUNT sous /data/config/ldap/data
+# (et non dans un volume Docker nommé) afin qu'elles vivent dans /data/config,
+# donc incluses dans les sauvegardes (ryvie-backup.sh) et migrables. C'est aussi
+# ce que le backend impose au runtime (architectureService.ts).
+sudo mkdir -p "$LDAP_DIR/data"
 
 # 2. Créer le fichier docker-compose.yml pour lancer OpenLDAP avec le mot de passe généré
 cat > docker-compose.yml <<EOF
@@ -1414,11 +1588,8 @@ services:
     networks:
       my_custom_network:
     volumes:
-      - openldap_data:/bitnami/openldap
+      - $LDAP_DIR/data:/bitnami/openldap
     restart: unless-stopped
-
-volumes:
-  openldap_data:
 
 networks:
   my_custom_network:
@@ -1818,8 +1989,8 @@ echo "sudo -u $EXEC_USER bash -lc 'touch /data/logs/.write_test && rm /data/logs
 echo "sudo -u $EXEC_USER bash -lc 'touch /opt/Ryvie/.write_test && rm /opt/Ryvie/.write_test'"
 echo ""
 echo "# Vérifier l'ownership des volumes Docker (NE PAS modifier)"
-echo "ls -ld /data/docker/volumes/immich-prod_prometheus-data/_data 2>/dev/null || echo 'Volume Prometheus non trouvé'"
-echo "ls -ld /data/docker/volumes/app-rpictures_pgvecto-rs/_data 2>/dev/null || echo 'Volume PostgreSQL non trouvé'"
+echo "ls -ld $DOCKER_ROOT/volumes/immich-prod_prometheus-data/_data 2>/dev/null || echo 'Volume Prometheus non trouvé'"
+echo "ls -ld $DOCKER_ROOT/volumes/app-rpictures_pgvecto-rs/_data 2>/dev/null || echo 'Volume PostgreSQL non trouvé'"
 echo ""
 echo "======================================================"
 echo "✅ Installation Ryvie OS terminée !"
@@ -1828,11 +1999,10 @@ echo ""
 echo "📍 Architecture créée :"
 echo "   /opt/Ryvie/               → Application principale (Ryvie-Back, Ryvie-Front)"
 echo "   /data/apps/               → Applications Ryvie (rPictures, rDrive, rdrop, rTransfer)"
-echo "   /data/apps/portainer/     → Données Portainer"
 echo "   /data/config/ldap/        → Configuration OpenLDAP"
 echo "   /data/config/             → Configurations (netbird, rdrive, backend-view, rclone)"
 echo "   /data/logs/               → Logs applicatifs"
-echo "   /data/docker/             → Volumes Docker (PROTÉGÉS - ne pas modifier)"
+echo "   $DOCKER_ROOT/       → Volumes Docker (PROTÉGÉS - ne pas modifier)"
 echo ""
 echo "⚠️  IMPORTANT : Si vous rencontrez des problèmes de permissions Docker,"
 echo "    décommentez la ligne 'repair_docker_volumes' dans la section Docker du script"
