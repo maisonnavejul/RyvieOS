@@ -1028,9 +1028,8 @@ persist_netbird_data() {
     # Créer le lien symbolique vers /data
     sudo ln -s "$dst" "$src" 2>/dev/null || true
 
-    # Activer + redémarrer si le service existe (garantit la persistance au reboot)
+    # Redémarrer si le service existe
     if systemctl list-unit-files 2>/dev/null | grep -q '^netbird\.service'; then
-        sudo systemctl enable netbird 2>/dev/null || true
         sudo systemctl start netbird 2>/dev/null || true
     fi
 
@@ -1570,6 +1569,20 @@ cd "$LDAP_DIR"
 # ce que le backend impose au runtime (architectureService.ts).
 sudo mkdir -p "$LDAP_DIR/data"
 
+# IMPORTANT : l'image OpenLDAP (bitnami 2.6) écrit dans ce bind-mount. Avec un volume
+# Docker NOMMÉ, Docker initialisait la propriété tout seul ; depuis le passage en
+# bind-mount (ci-dessus), le dossier reste la propriété de root → le conteneur boucle
+# indéfiniment sur : mkdir: cannot create directory '/bitnami/openldap/data': Permission
+# denied. On aligne donc la propriété du dossier ET l'UID du conteneur (cf. user: dans
+# le compose) sur le propriétaire de /data = l'utilisateur applicatif ryvie, quel que
+# soit son UID (1001 ici, 1000 sur une appliance où ryvie est le 1er user créé).
+# ⚠️ Le conteneur DOIT garder le GID 0 (groupe root) : les dossiers internes
+# /opt/bitnami/openldap ne sont accessibles qu'au groupe root — testé, « <uid>:1000 »
+# échoue (slapd.ldif: Permission denied) alors que « <uid>:0 » fonctionne. C'est
+# d'ailleurs ainsi que bitnami tourne par défaut (1001:0). Fallback 1001 si illisible.
+LDAP_UID="$(stat -c '%u' "$DATA_ROOT" 2>/dev/null || echo 1001)"
+sudo chown -R "$LDAP_UID:0" "$LDAP_DIR/data"
+
 # 2. Créer le fichier docker-compose.yml pour lancer OpenLDAP avec le mot de passe généré
 cat > docker-compose.yml <<EOF
 version: '3.8'
@@ -1578,6 +1591,9 @@ services:
   openldap:
     image: julescloud/ryvieldap:latest
     container_name: openldap
+    # Tourne sous l'UID de ryvie (propriétaire du bind-mount), GID 0 obligatoire
+    # (cf. commentaire du chown ci-dessus). Sur appliance : "1000:0" ; ici : "1001:0".
+    user: "$LDAP_UID:0"
     environment:
       - LDAP_ADMIN_USERNAME=admin
       - LDAP_ADMIN_PASSWORD=$LDAP_ADMIN_PASSWORD
