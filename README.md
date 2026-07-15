@@ -11,7 +11,7 @@ RyvieOS is the operating system that turns a VPS or a physical machine into a se
 Install RyvieOS with a single command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maisonnavejul/RyvieOS/tst/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/maisonnavejul/RyvieOS/main/install.sh | bash
 ```
 
 ## What it includes
