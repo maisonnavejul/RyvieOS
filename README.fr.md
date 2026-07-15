@@ -11,7 +11,7 @@ RyvieOS est le système d'exploitation qui transforme un VPS ou une machine phys
 Installez RyvieOS avec une seule commande :
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maisonnavejul/RyvieOS/tst/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/maisonnavejul/RyvieOS/main/install.sh | bash
 ```
 
 ## Ce qu'il inclut
