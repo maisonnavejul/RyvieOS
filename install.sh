@@ -1580,7 +1580,7 @@ sudo mkdir -p "$LDAP_DIR/data"
 # /opt/bitnami/openldap ne sont accessibles qu'au groupe root — testé, « <uid>:1000 »
 # échoue (slapd.ldif: Permission denied) alors que « <uid>:0 » fonctionne. C'est
 # d'ailleurs ainsi que bitnami tourne par défaut (1001:0). Fallback 1001 si illisible.
-LDAP_UID="$(stat -c '%u' "$DATA_ROOT" 2>/dev/null || echo 1001)"
+LDAP_UID="$(id -u "$EXEC_USER" 2>/dev/null || stat -c "%u" "$DATA_ROOT" 2>/dev/null || echo 1001)"
 sudo chown -R "$LDAP_UID:0" "$LDAP_DIR/data"
 
 # 2. Créer le fichier docker-compose.yml pour lancer OpenLDAP avec le mot de passe généré
