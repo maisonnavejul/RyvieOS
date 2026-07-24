@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # =====================================================
-# Ryvie OS — Script de désinstallation
+# Ryvie OS — Uninstall script
 # =====================================================
-# Usage :
-#   sudo bash uninstall.sh                  → désinstalle Ryvie, CONSERVE /data (données utilisateur)
-#   sudo bash uninstall.sh --purge-data     → désinstalle ET détruit /data (IRRÉVERSIBLE)
-#   sudo bash uninstall.sh --purge-docker   → supprime aussi les paquets Docker
-#   sudo bash uninstall.sh --yes            → pas de confirmation interactive
-# Les flags sont cumulables.
+# Usage:
+#   sudo bash uninstall.sh                  → uninstalls Ryvie, KEEPS /data (user data)
+#   sudo bash uninstall.sh --purge-data     → uninstalls AND destroys /data (IRREVERSIBLE)
+#   sudo bash uninstall.sh --purge-docker   → also removes Docker packages
+#   sudo bash uninstall.sh --yes            → no interactive confirmation
+# Flags can be combined.
 # =====================================================
 
 set -u
@@ -20,7 +20,7 @@ for arg in "$@"; do
     --purge-data)   PURGE_DATA=1 ;;
     --purge-docker) PURGE_DOCKER=1 ;;
     --yes|-y)       ASSUME_YES=1 ;;
-    *) echo "Option inconnue: $arg"; exit 1 ;;
+    *) echo "Unknown option: $arg"; exit 1 ;;
   esac
 done
 
@@ -32,77 +32,103 @@ EXEC_USER="${SUDO_USER:-ryvie}"
 
 echo ""
 echo "====================================================="
-echo " Désinstallation de Ryvie OS"
+echo " Ryvie OS uninstall"
 echo "====================================================="
 echo ""
-echo "  Code applicatif  : $RYVIE_DIR              → SUPPRIMÉ"
-echo "  Services PM2     : backend/frontend        → SUPPRIMÉS"
-echo "  Conteneurs Docker: apps Ryvie              → ARRÊTÉS ET SUPPRIMÉS"
-echo "  NetBird          : déconnecté et désactivé"
+echo "  Application code : $RYVIE_DIR              → REMOVED"
+echo "  PM2 services     : backend/frontend        → REMOVED"
+echo "  Docker containers: Ryvie apps              → STOPPED AND REMOVED"
+echo "  NetBird          : disconnected and disabled"
 if [ "$PURGE_DATA" -eq 1 ]; then
-  echo "  Données /data    : ⚠️  DÉTRUITES (--purge-data) — IRRÉVERSIBLE"
+  echo "  /data            : ⚠️  DESTROYED (--purge-data) — IRREVERSIBLE"
 else
-  echo "  Données /data    : ✅ CONSERVÉES (photos, fichiers, configs)"
+  echo "  /data            : ✅ KEPT (photos, files, configs)"
 fi
 if [ "$PURGE_DOCKER" -eq 1 ]; then
-  echo "  Paquets Docker   : SUPPRIMÉS (--purge-docker)"
+  echo "  Docker packages  : REMOVED (--purge-docker)"
 else
-  echo "  Paquets Docker   : conservés"
+  echo "  Docker packages  : kept"
 fi
 echo ""
 
 if [ "$ASSUME_YES" -ne 1 ]; then
   if [ "$PURGE_DATA" -eq 1 ]; then
-    read -p "⚠️  TOUTES LES DONNÉES de /data seront PERDUES. Tapez 'DETRUIRE' pour confirmer : " CONFIRM
-    [ "$CONFIRM" = "DETRUIRE" ] || { echo "Abandon."; exit 1; }
+    read -p "⚠️  ALL DATA in /data will be LOST. Type 'DESTROY' to confirm: " CONFIRM
+    [ "$CONFIRM" = "DESTROY" ] || { echo "Aborted."; exit 1; }
   else
-    read -p "Confirmer la désinstallation de Ryvie ? (oui/non) : " CONFIRM
-    [ "$CONFIRM" = "oui" ] || { echo "Abandon."; exit 1; }
+    read -p "Confirm Ryvie uninstall? (yes/no): " CONFIRM
+    [ "$CONFIRM" = "yes" ] || { echo "Aborted."; exit 1; }
+    # Offer /data deletion (interactive equivalent of --purge-data)
+    read -p "Also delete ALL data in /data (photos, files, configs)? (yes/no): " CONFIRM_DATA
+    if [ "$CONFIRM_DATA" = "yes" ]; then
+      read -p "⚠️  IRREVERSIBLE. Type 'DESTROY' to confirm: " CONFIRM2
+      if [ "$CONFIRM2" = "DESTROY" ]; then
+        PURGE_DATA=1
+        echo "→ /data will be DESTROYED."
+      else
+        echo "→ Wrong confirmation: /data will be KEPT."
+      fi
+    else
+      echo "→ /data will be kept."
+    fi
   fi
 fi
 
 echo ""
 echo "----------------------------------------------------"
-echo "1/7 Arrêt des services PM2"
+echo "1/7 Stopping PM2 services"
 echo "----------------------------------------------------"
 if command -v pm2 >/dev/null 2>&1; then
   sudo -u "$EXEC_USER" pm2 delete all 2>/dev/null || true
   sudo -u "$EXEC_USER" pm2 save --force 2>/dev/null || true
-  # Retirer le démarrage automatique PM2 (service systemd pm2-<user>)
+  # Remove PM2 autostart (systemd service pm2-<user>)
   sudo pm2 unstartup systemd -u "$EXEC_USER" --hp "$(getent passwd "$EXEC_USER" | cut -d: -f6)" 2>/dev/null || true
   sudo systemctl disable "pm2-$EXEC_USER" 2>/dev/null || true
-  echo "✅ Services PM2 supprimés."
+  echo "✅ PM2 services removed."
 else
-  echo "ℹ️ PM2 non installé, rien à faire."
+  echo "ℹ️ PM2 not installed, nothing to do."
 fi
 
 echo ""
 echo "----------------------------------------------------"
-echo "2/7 Arrêt et suppression des conteneurs Docker"
+echo "2/7 Stopping and removing Docker containers"
 echo "----------------------------------------------------"
 if command -v docker >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
-  # Descendre proprement les stacks compose connues (apps + ldap)
+  # Bring down known compose stacks cleanly (apps + ldap)
   for compose in "$DATA_ROOT"/apps/*/docker-compose.yml \
                  "$DATA_ROOT"/apps/*/*/docker-compose.yml \
                  "$DATA_ROOT"/config/ldap/docker-compose.yml; do
     [ -f "$compose" ] || continue
-    echo "  ↓ docker compose down : $(dirname "$compose")"
+    echo "  ↓ docker compose down: $(dirname "$compose")"
     sudo docker compose -f "$compose" down --remove-orphans 2>/dev/null || true
   done
-  # Puis tout conteneur restant (keycloak, caddy, etc.)
+  # Then any remaining container (keycloak, caddy, etc.)
   REMAINING=$(sudo docker ps -aq)
   if [ -n "$REMAINING" ]; then
     sudo docker stop $REMAINING 2>/dev/null || true
     sudo docker rm -f $REMAINING 2>/dev/null || true
   fi
-  echo "✅ Conteneurs arrêtés et supprimés."
+  echo "✅ Containers stopped and removed."
+
+  # Purge orphaned Docker networks. WITHOUT this, a ghost bridge keeps the
+  # old subnet (e.g. 172.20.0.0/24): on the NEXT install, the new network
+  # gets the same subnet, the host route points to the dead bridge →
+  # containers unreachable from the host → install.sh loops forever on
+  # "Waiting for the OpenLDAP service".
+  sudo docker network prune -f 2>/dev/null || true
+  # Leftover kernel bridges the daemon lost track of (network prune no
+  # longer sees them): delete them directly.
+  for br in $(ip -br link show type bridge 2>/dev/null | awk '{print $1}' | grep '^br-'); do
+    sudo ip link delete "$br" 2>/dev/null || true
+  done
+  echo "✅ Orphaned Docker networks purged."
   if [ "$PURGE_DATA" -eq 1 ]; then
-    # Les volumes/images ne servent plus à rien si on détruit /data
+    # Volumes/images are useless once /data is destroyed
     sudo docker system prune -af --volumes 2>/dev/null || true
-    echo "✅ Images et volumes Docker purgés."
+    echo "✅ Docker images and volumes purged."
   fi
 else
-  echo "ℹ️ Docker non disponible, rien à faire."
+  echo "ℹ️ Docker not available, nothing to do."
 fi
 
 echo ""
@@ -112,45 +138,56 @@ echo "----------------------------------------------------"
 if command -v netbird >/dev/null 2>&1; then
   sudo netbird down 2>/dev/null || true
   sudo systemctl disable --now netbird 2>/dev/null || true
-  # Retirer le lien /var/lib/netbird → /data/netbird
+  # Remove the /var/lib/netbird → /data/netbird symlink
   [ -L /var/lib/netbird ] && sudo rm -f /var/lib/netbird
-  echo "✅ NetBird déconnecté et désactivé (paquet conservé, identité dans $DATA_ROOT/netbird)."
+  echo "✅ NetBird disconnected and disabled (package kept, identity in $DATA_ROOT/netbird)."
 else
-  echo "ℹ️ NetBird non installé."
+  echo "ℹ️ NetBird not installed."
 fi
 
 echo ""
 echo "----------------------------------------------------"
-echo "4/7 Suppression du code applicatif"
+echo "4/7 Removing application code"
 echo "----------------------------------------------------"
 if [ -d "$RYVIE_DIR" ]; then
   sudo rm -rf "$RYVIE_DIR"
-  echo "✅ $RYVIE_DIR supprimé."
+  echo "✅ $RYVIE_DIR removed."
 else
   echo "ℹ️ $RYVIE_DIR absent."
 fi
-# Service d'installation automatique éventuel
+# Auto-install service, if any
 sudo systemctl disable ryvie-install.service 2>/dev/null || true
 sudo rm -f /etc/systemd/system/ryvie-install.service /root/run-install.sh
 
 echo ""
 echo "----------------------------------------------------"
-echo "5/7 Hostname avahi"
+echo "5/7 Avahi hostname"
 echo "----------------------------------------------------"
 if [ -f /etc/avahi/avahi-daemon.conf ] && grep -q '^host-name=ryvie' /etc/avahi/avahi-daemon.conf; then
   sudo sed -i 's/^host-name=ryvie/#host-name=/' /etc/avahi/avahi-daemon.conf
   sudo systemctl restart avahi-daemon 2>/dev/null || true
-  echo "✅ Hostname mDNS 'ryvie.local' retiré."
+  echo "✅ mDNS hostname 'ryvie.local' removed."
 else
-  echo "ℹ️ Rien à faire."
+  echo "ℹ️ Nothing to do."
 fi
 
 echo ""
 echo "----------------------------------------------------"
-echo "6/7 Données /data"
+echo "6/7 /data"
 echo "----------------------------------------------------"
 if [ "$PURGE_DATA" -eq 1 ]; then
-  # Docker/containerd pointent sur /data → on doit les arrêter et les repointer sur /var/lib
+  # Detect BEFORE unmounting what /data sits on: a RAID array (appliance) or a
+  # loopback image (vps). This decides how we destroy the data.
+  DATA_SRC="$(findmnt -no SOURCE "$DATA_ROOT" 2>/dev/null || true)"
+  DATA_IS_RAID=0
+  case "$DATA_SRC" in /dev/md*) DATA_IS_RAID=1 ;; esac
+  # Fallback: even if /data is already unmounted, an existing md array means appliance.
+  if [ "$DATA_IS_RAID" -eq 0 ] && [ -z "$DATA_SRC" ] && [ -b /dev/md0 ]; then
+    DATA_IS_RAID=1
+    DATA_SRC="/dev/md0"
+  fi
+
+  # Docker/containerd point to /data → stop them and point them back to /var/lib
   sudo systemctl stop docker containerd 2>/dev/null || true
   if [ -f /etc/docker/daemon.json ] && command -v jq >/dev/null 2>&1; then
     sudo sh -c 'jq "del(.\"data-root\")" /etc/docker/daemon.json > /tmp/daemon.json && mv /tmp/daemon.json /etc/docker/daemon.json' || true
@@ -160,44 +197,61 @@ if [ "$PURGE_DATA" -eq 1 ]; then
   if findmnt -no TARGET "$DATA_ROOT" >/dev/null 2>&1; then
     sudo umount -l "$DATA_ROOT" 2>/dev/null || true
   fi
-  # Retirer l'entrée fstab de /data (partition ou image loopback)
+  # Remove the /data fstab entry (partition or loopback image)
   sudo sed -i "\|[[:space:]]${DATA_ROOT}[[:space:]]|d" /etc/fstab
-  # Supprimer l'image loopback si elle existe
-  if [ -f "$DATA_IMG" ]; then
-    sudo rm -f "$DATA_IMG"
-    echo "✅ Image loopback $DATA_IMG supprimée."
+
+  if [ "$DATA_IS_RAID" -eq 1 ]; then
+    # APPLIANCE: reformat the RAID with a fresh empty btrfs and remount it, so
+    # the machine is left in the exact state install.sh expects (empty /data on
+    # the RAID). Just unmounting would make the next install fall back to a
+    # loopback image (vps mode) and ignore the RAID entirely.
+    echo "🧱 Appliance détecté (/data sur $DATA_SRC) — reformatage du RAID en btrfs vide…"
+    sudo mkfs.btrfs -f -L DATA "$DATA_SRC" >/dev/null 2>&1 && echo "✅ $DATA_SRC reformaté (btrfs vide)."
+    sudo mkdir -p "$DATA_ROOT"
+    if sudo mount -o noatime,compress=zstd:3 "$DATA_SRC" "$DATA_ROOT" 2>/dev/null; then
+      NEW_UUID="$(sudo blkid -s UUID -o value "$DATA_SRC" 2>/dev/null || true)"
+      [ -n "$NEW_UUID" ] && echo "UUID=$NEW_UUID $DATA_ROOT btrfs defaults,noatime,compress=zstd:3,nofail 0 0" | sudo tee -a /etc/fstab >/dev/null
+      sudo chown ryvie:ryvie "$DATA_ROOT" 2>/dev/null || true
+      echo "✅ /data vide remonté sur le RAID (prêt pour une réinstallation appliance)."
+    else
+      echo "⚠️  Échec du remontage — recrée /data manuellement avant install.sh."
+    fi
+  else
+    # VPS: delete the loopback image and clear the mount point.
+    if [ -f "$DATA_IMG" ]; then
+      sudo rm -f "$DATA_IMG"
+      echo "✅ Loopback image $DATA_IMG deleted."
+    fi
+    sudo rm -rf "${DATA_ROOT:?}" 2>/dev/null || true
+    echo "✅ /data destroyed (loopback image removed)."
   fi
-  # Vider le point de montage résiduel
-  sudo rm -rf "${DATA_ROOT:?}" 2>/dev/null || true
-  echo "✅ /data détruit."
-  echo "ℹ️ Si /data était une partition/RAID dédié, le disque n'est PAS reformaté (démonté uniquement)."
   if [ "$PURGE_DOCKER" -ne 1 ]; then
     sudo systemctl start containerd docker 2>/dev/null || true
   fi
 else
-  echo "✅ /data conservé intégralement (photos, fichiers, annuaire, configs)."
-  echo "   → Une réinstallation via install.sh retrouvera ces données."
+  echo "✅ /data fully kept (photos, files, directory, configs)."
+  echo "   → Reinstalling via install.sh will pick these data up again."
 fi
 
 echo ""
 echo "----------------------------------------------------"
-echo "7/7 Paquets Docker"
+echo "7/7 Docker packages"
 echo "----------------------------------------------------"
 if [ "$PURGE_DOCKER" -eq 1 ]; then
   sudo systemctl disable --now docker containerd 2>/dev/null || true
   sudo apt-get remove -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin 2>/dev/null || true
   sudo rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.gpg
-  echo "✅ Paquets Docker supprimés."
+  echo "✅ Docker packages removed."
 else
-  echo "ℹ️ Paquets Docker conservés."
+  echo "ℹ️ Docker packages kept."
 fi
 
 echo ""
 echo "====================================================="
-echo "✅ Désinstallation de Ryvie terminée."
+echo "✅ Ryvie uninstall complete."
 if [ "$PURGE_DATA" -ne 1 ]; then
-  echo "   Vos données sont intactes dans $DATA_ROOT."
+  echo "   Your data is intact in $DATA_ROOT."
 fi
-echo "   Non supprimés volontairement : utilisateur '$EXEC_USER', sudoers,"
-echo "   Node.js/npm/PM2, Redis, paquet NetBird."
+echo "   Intentionally not removed: user '$EXEC_USER', sudoers,"
+echo "   Node.js/npm/PM2, Redis, NetBird package."
 echo "====================================================="

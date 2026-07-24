@@ -144,9 +144,9 @@ else
   # --- Dimensionnement : espace libre sur / moins 5 Go de marge (minimum 8 Go) ---
   FREE_KB=$(df -k --output=avail / | tail -1 | tr -d ' ')
   FREE_GB=$(( FREE_KB / 1024 / 1024 ))
-  IMG_GB=$(( FREE_GB - 5 ))
+  IMG_GB=$(( FREE_GB - 10 ))
   if [ "$IMG_GB" -lt 8 ]; then
-    echo "❌ Espace disque insuffisant pour créer $DATA_IMG (${FREE_GB} Go libres, minimum requis: 13 Go)."
+    echo "❌ Espace disque insuffisant pour créer $DATA_IMG (${FREE_GB} Go libres, minimum requis: 18 Go)."
     exit 1
   fi
 
@@ -171,7 +171,7 @@ else
 
   # --- Montage persistant via fstab ---
   if ! grep -qE "^[^#]*[[:space:]]${DATA_ROOT}[[:space:]]+btrfs" /etc/fstab; then
-    echo "$DATA_IMG $DATA_ROOT btrfs loop,compress=zstd:3,noatime 0 0" | sudo tee -a /etc/fstab >/dev/null
+    echo "$DATA_IMG $DATA_ROOT btrfs loop,compress=zstd:3,noatime,nofail,x-systemd.device-timeout=10s 0 0" | sudo tee -a /etc/fstab >/dev/null
   fi
   sudo systemctl daemon-reload 2>/dev/null || true
   sudo mount "$DATA_ROOT" || { echo "❌ Impossible de monter $DATA_IMG sur $DATA_ROOT (support loop indisponible ?)"; exit 1; }
@@ -379,7 +379,7 @@ else
     install_pkgs jq || { echo "❌ Échec de l'installation de jq"; exit 1; }
 fi
 
-# Vérifier et installer rsync si nécessaire (utilisé pour les migrations de données)
+# Verifier et installer rsync si necessaire (deplacement de /var/lib/docker et /var/lib/containerd vers /data a l installation ; les migrations de stockage utilisent btrfs device add/remove, PAS rsync)
 if command -v rsync > /dev/null 2>&1; then
     echo "✅ rsync est déjà installé : $(rsync --version | head -n1)"
 else
@@ -1580,7 +1580,7 @@ sudo mkdir -p "$LDAP_DIR/data"
 # /opt/bitnami/openldap ne sont accessibles qu'au groupe root — testé, « <uid>:1000 »
 # échoue (slapd.ldif: Permission denied) alors que « <uid>:0 » fonctionne. C'est
 # d'ailleurs ainsi que bitnami tourne par défaut (1001:0). Fallback 1001 si illisible.
-LDAP_UID="$(stat -c '%u' "$DATA_ROOT" 2>/dev/null || echo 1001)"
+LDAP_UID="$(id -u "$EXEC_USER" 2>/dev/null || stat -c "%u" "$DATA_ROOT" 2>/dev/null || echo 1001)"
 sudo chown -R "$LDAP_UID:0" "$LDAP_DIR/data"
 
 # 2. Créer le fichier docker-compose.yml pour lancer OpenLDAP avec le mot de passe généré
