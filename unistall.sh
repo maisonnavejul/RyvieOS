@@ -176,6 +176,17 @@ echo "----------------------------------------------------"
 echo "6/7 /data"
 echo "----------------------------------------------------"
 if [ "$PURGE_DATA" -eq 1 ]; then
+  # Detect BEFORE unmounting what /data sits on: a RAID array (appliance) or a
+  # loopback image (vps). This decides how we destroy the data.
+  DATA_SRC="$(findmnt -no SOURCE "$DATA_ROOT" 2>/dev/null || true)"
+  DATA_IS_RAID=0
+  case "$DATA_SRC" in /dev/md*) DATA_IS_RAID=1 ;; esac
+  # Fallback: even if /data is already unmounted, an existing md array means appliance.
+  if [ "$DATA_IS_RAID" -eq 0 ] && [ -z "$DATA_SRC" ] && [ -b /dev/md0 ]; then
+    DATA_IS_RAID=1
+    DATA_SRC="/dev/md0"
+  fi
+
   # Docker/containerd point to /data → stop them and point them back to /var/lib
   sudo systemctl stop docker containerd 2>/dev/null || true
   if [ -f /etc/docker/daemon.json ] && command -v jq >/dev/null 2>&1; then
@@ -188,17 +199,32 @@ if [ "$PURGE_DATA" -eq 1 ]; then
   fi
   # Remove the /data fstab entry (partition or loopback image)
   sudo sed -i "\|[[:space:]]${DATA_ROOT}[[:space:]]|d" /etc/fstab
-  # Delete the loopback image if it exists
-  if [ -f "$DATA_IMG" ]; then
-    sudo rm -f "$DATA_IMG"
-    echo "✅ Loopback image $DATA_IMG deleted."
+
+  if [ "$DATA_IS_RAID" -eq 1 ]; then
+    # APPLIANCE: reformat the RAID with a fresh empty btrfs and remount it, so
+    # the machine is left in the exact state install.sh expects (empty /data on
+    # the RAID). Just unmounting would make the next install fall back to a
+    # loopback image (vps mode) and ignore the RAID entirely.
+    echo "🧱 Appliance détecté (/data sur $DATA_SRC) — reformatage du RAID en btrfs vide…"
+    sudo mkfs.btrfs -f -L DATA "$DATA_SRC" >/dev/null 2>&1 && echo "✅ $DATA_SRC reformaté (btrfs vide)."
+    sudo mkdir -p "$DATA_ROOT"
+    if sudo mount -o noatime,compress=zstd:3 "$DATA_SRC" "$DATA_ROOT" 2>/dev/null; then
+      NEW_UUID="$(sudo blkid -s UUID -o value "$DATA_SRC" 2>/dev/null || true)"
+      [ -n "$NEW_UUID" ] && echo "UUID=$NEW_UUID $DATA_ROOT btrfs defaults,noatime,compress=zstd:3,nofail 0 0" | sudo tee -a /etc/fstab >/dev/null
+      sudo chown ryvie:ryvie "$DATA_ROOT" 2>/dev/null || true
+      echo "✅ /data vide remonté sur le RAID (prêt pour une réinstallation appliance)."
+    else
+      echo "⚠️  Échec du remontage — recrée /data manuellement avant install.sh."
+    fi
+  else
+    # VPS: delete the loopback image and clear the mount point.
+    if [ -f "$DATA_IMG" ]; then
+      sudo rm -f "$DATA_IMG"
+      echo "✅ Loopback image $DATA_IMG deleted."
+    fi
+    sudo rm -rf "${DATA_ROOT:?}" 2>/dev/null || true
+    echo "✅ /data destroyed (loopback image removed)."
   fi
-  # Clear the leftover mount point
-  sudo rm -rf "${DATA_ROOT:?}" 2>/dev/null || true
-  echo "✅ /data destroyed."
-  echo "ℹ️ If /data was a dedicated partition/RAID, the disk is NOT reformatted (unmounted only)."
-  echo "ℹ️ Appliance reinstall: recreate a btrfs /data on the RAID (mkfs + mount + fstab)"
-  echo "   BEFORE running install.sh, otherwise it will fall back to a loopback image (vps mode)."
   if [ "$PURGE_DOCKER" -ne 1 ]; then
     sudo systemctl start containerd docker 2>/dev/null || true
   fi
